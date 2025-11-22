@@ -9,6 +9,9 @@ struct ScriptListView: View {
     @State private var selectedScript: Script?
     @State private var showingSettings = false
     @State private var scriptForTeleprompter: Script?
+    @State private var scriptToDelete: Script?
+    @State private var showingDeleteAlert = false
+    @State private var showingClearAllAlert = false
 
     var body: some View {
         NavigationStack {
@@ -49,6 +52,21 @@ struct ScriptListView: View {
                                     .font(.system(size: 16, weight: .medium))
                                     .foregroundColor(.white)
                                 Spacer()
+                                Button(action: {
+                                    showingClearAllAlert = true
+                                }) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 12))
+                                        Text("全部清空")
+                                            .font(.system(size: 13))
+                                    }
+                                    .foregroundColor(.red.opacity(0.8))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.red.opacity(0.15))
+                                    .cornerRadius(6)
+                                }
                             }
                             .padding(.horizontal)
 
@@ -66,9 +84,18 @@ struct ScriptListView: View {
                                             showingSettings = true
                                         },
                                         onDelete: {
-                                            deleteScript(script)
+                                            scriptToDelete = script
+                                            showingDeleteAlert = true
                                         }
                                     )
+                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                        Button(role: .destructive) {
+                                            scriptToDelete = script
+                                            showingDeleteAlert = true
+                                        } label: {
+                                            Label("删除", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                             .padding(.horizontal)
@@ -91,11 +118,33 @@ struct ScriptListView: View {
                 TeleprompterSettingsView(script: script)
             }
         }
+        .alert("确认删除", isPresented: $showingDeleteAlert, presenting: scriptToDelete) { script in
+            Button("取消", role: .cancel) { }
+            Button("删除", role: .destructive) {
+                deleteScript(script)
+            }
+        } message: { script in
+            Text("确定要删除「\(script.displayTitle)」吗？此操作无法撤销。")
+        }
+        .alert("确认清空", isPresented: $showingClearAllAlert) {
+            Button("取消", role: .cancel) { }
+            Button("全部清空", role: .destructive) {
+                clearAllScripts()
+            }
+        } message: {
+            Text("确定要清空全部台词吗？此操作无法撤销。")
+        }
         .preferredColorScheme(.dark)
     }
 
     private func deleteScript(_ script: Script) {
         modelContext.delete(script)
+    }
+
+    private func clearAllScripts() {
+        for script in scripts {
+            modelContext.delete(script)
+        }
     }
 }
 
