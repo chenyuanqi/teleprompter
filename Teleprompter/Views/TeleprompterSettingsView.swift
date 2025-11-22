@@ -42,7 +42,7 @@ struct TeleprompterSettingsView: View {
                                 .foregroundColor(.white)
                             Spacer()
                             Button(action: {
-                                settings.rotation = settings.rotation == 0 ? 90 : 0
+                                settings.rotation = (settings.rotation + 90) % 360
                             }) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "rectangle.portrait.rotate")
@@ -145,6 +145,7 @@ struct PreviewCard: View {
         .padding(20)
         .background(Color(white: 0.12))
         .cornerRadius(12)
+        .rotationEffect(.degrees(Double(settings.rotation)))
         .padding(.horizontal)
     }
 }
@@ -207,7 +208,8 @@ struct ColorButton: View {
         Button(action: action) {
             Circle()
                 .fill(color)
-                .frame(width: 36, height: 36)
+                .frame(width: 40, height: 40)
+                .aspectRatio(1, contentMode: .fit)
                 .overlay(
                     Circle()
                         .stroke(Color.white, lineWidth: isSelected ? 3 : 0)
