@@ -1,9 +1,10 @@
 import SwiftUI
+import SwiftData
 
 struct FloatingTeleprompterView: View {
     @Environment(\.dismiss) private var dismiss
 
-    let script: Script
+    @Bindable var script: Script
     let settings: TeleprompterSettings
 
     @State private var scrollOffset: CGFloat = 0

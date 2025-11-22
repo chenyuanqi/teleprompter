@@ -5,9 +5,7 @@ struct ScriptListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(sort: \Script.updatedAt, order: .reverse) private var scripts: [Script]
 
-    @State private var showingEditor = false
     @State private var selectedScript: Script?
-    @State private var showingSettings = false
     @State private var scriptForTeleprompter: Script?
     @State private var scriptToDelete: Script?
     @State private var showingDeleteAlert = false
@@ -22,8 +20,9 @@ struct ScriptListView: View {
                     VStack(spacing: 20) {
                         // 新建台词卡片
                         Button(action: {
-                            selectedScript = nil
-                            showingEditor = true
+                            let newScript = Script(content: "")
+                            modelContext.insert(newScript)
+                            selectedScript = newScript
                         }) {
                             VStack(spacing: 12) {
                                 ZStack {
@@ -77,11 +76,9 @@ struct ScriptListView: View {
                                         script: script,
                                         onEdit: {
                                             selectedScript = script
-                                            showingEditor = true
                                         },
                                         onTeleprompter: {
                                             scriptForTeleprompter = script
-                                            showingSettings = true
                                         },
                                         onDelete: {
                                             scriptToDelete = script
@@ -102,13 +99,13 @@ struct ScriptListView: View {
             .toolbarBackground(Color.black, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
         }
-        .sheet(isPresented: $showingEditor) {
-            ScriptEditorView(script: selectedScript)
+        .sheet(item: $selectedScript) { script in
+            ScriptEditorView(script: script)
+                .environment(\.modelContainer, modelContext.container)
         }
-        .sheet(isPresented: $showingSettings) {
-            if let script = scriptForTeleprompter {
-                TeleprompterSettingsView(script: script)
-            }
+        .sheet(item: $scriptForTeleprompter) { script in
+            TeleprompterSettingsView(script: script)
+                .environment(\.modelContainer, modelContext.container)
         }
         .alert("确认删除", isPresented: $showingDeleteAlert, presenting: scriptToDelete) { script in
             Button("取消", role: .cancel) { }

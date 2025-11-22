@@ -1,9 +1,10 @@
 import SwiftUI
+import SwiftData
 
 struct TeleprompterSettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
-    let script: Script
+    @Bindable var script: Script
 
     @State private var settings = TeleprompterSettings()
     @State private var showingTeleprompter = false

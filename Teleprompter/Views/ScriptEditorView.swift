@@ -5,9 +5,10 @@ struct ScriptEditorView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
-    let script: Script?
+    @Bindable var script: Script
 
     @State private var content: String = ""
+    @State private var isNewScript = false
     @FocusState private var isTextEditorFocused: Bool
 
     var body: some View {
@@ -25,7 +26,7 @@ struct ScriptEditorView: View {
                         .focused($isTextEditorFocused)
                 }
             }
-            .navigationTitle(script == nil ? "新建台词" : "编辑台词")
+            .navigationTitle(isNewScript ? "新建台词" : "编辑台词")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(Color.black, for: .navigationBar)
@@ -33,7 +34,7 @@ struct ScriptEditorView: View {
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("取消") {
-                        dismiss()
+                        cancelEdit()
                     }
                     .foregroundColor(.white)
                 }
@@ -48,9 +49,8 @@ struct ScriptEditorView: View {
             }
         }
         .onAppear {
-            if let script = script {
-                content = script.content
-            }
+            content = script.content
+            isNewScript = script.content.isEmpty
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 isTextEditorFocused = true
             }
@@ -60,24 +60,34 @@ struct ScriptEditorView: View {
 
     private func saveScript() {
         let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedContent.isEmpty else {
-            dismiss()
-            return
-        }
 
-        if let existingScript = script {
-            existingScript.content = content
-            existingScript.updatedAt = Date()
+        if trimmedContent.isEmpty {
+            // 如果内容为空，删除这个草稿
+            modelContext.delete(script)
         } else {
-            let newScript = Script(content: content)
-            modelContext.insert(newScript)
+            // 更新内容
+            script.content = content
+            script.updatedAt = Date()
         }
 
+        dismiss()
+    }
+
+    private func cancelEdit() {
+        if isNewScript && script.content.isEmpty {
+            // 如果是新建的空草稿，取消时删除
+            modelContext.delete(script)
+        }
         dismiss()
     }
 }
 
 #Preview {
-    ScriptEditorView(script: nil)
-        .modelContainer(for: Script.self, inMemory: true)
+    let config = ModelConfiguration(isStoredInMemoryOnly: true)
+    let container = try! ModelContainer(for: Script.self, configurations: config)
+    let script = Script(content: "示例台词内容")
+    container.mainContext.insert(script)
+
+    return ScriptEditorView(script: script)
+        .modelContainer(container)
 }
