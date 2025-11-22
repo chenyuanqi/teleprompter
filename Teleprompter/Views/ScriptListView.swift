@@ -190,7 +190,9 @@ struct ScriptRowView: View {
 
                     Spacer()
 
-                    Button(action: onTeleprompter) {
+                    Button(action: {
+                        onTeleprompter()
+                    }) {
                         Text("悬浮提词")
                             .font(.system(size: 13))
                             .foregroundColor(.white)
@@ -199,12 +201,23 @@ struct ScriptRowView: View {
                             .background(Color(white: 0.3))
                             .cornerRadius(6)
                     }
+                    .buttonStyle(PlainButtonStyle())
                 }
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color(white: 0.12))
             .cornerRadius(12)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if offset < 0 {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        offset = 0
+                    }
+                } else if !isSwiping {
+                    onEdit()
+                }
+            }
             .offset(x: offset)
             .gesture(
                 DragGesture()
@@ -227,18 +240,6 @@ struct ScriptRowView: View {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                                 offset = 0
                             }
-                        }
-                    }
-            )
-            .simultaneousGesture(
-                TapGesture()
-                    .onEnded {
-                        if offset < 0 {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                offset = 0
-                            }
-                        } else if !isSwiping {
-                            onEdit()
                         }
                     }
             )
