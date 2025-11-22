@@ -71,7 +71,7 @@ struct ScriptListView: View {
                             .padding(.horizontal)
 
                             // 台词列表
-                            LazyVStack(spacing: 12) {
+                            VStack(spacing: 12) {
                                 ForEach(scripts) { script in
                                     ScriptRowView(
                                         script: script,
@@ -88,14 +88,6 @@ struct ScriptListView: View {
                                             showingDeleteAlert = true
                                         }
                                     )
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                        Button(role: .destructive) {
-                                            scriptToDelete = script
-                                            showingDeleteAlert = true
-                                        } label: {
-                                            Label("删除", systemImage: "trash")
-                                        }
-                                    }
                                 }
                             }
                             .padding(.horizontal)
@@ -154,48 +146,102 @@ struct ScriptRowView: View {
     let onTeleprompter: () -> Void
     let onDelete: () -> Void
 
+    @State private var offset: CGFloat = 0
+    @State private var isSwiping = false
+
+    private let deleteButtonWidth: CGFloat = 80
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(script.displayTitle)
-                .font(.system(size: 16, weight: .medium))
-                .foregroundColor(.white)
-                .lineLimit(1)
-
-            Text(script.previewContent)
-                .font(.system(size: 14))
-                .foregroundColor(.gray)
-                .lineLimit(1)
-
+        ZStack(alignment: .trailing) {
+            // 删除按钮背景
             HStack {
-                Text(script.formattedDate)
-                    .font(.system(size: 12))
-                    .foregroundColor(.gray.opacity(0.7))
-
                 Spacer()
-
-                Button(action: onTeleprompter) {
-                    Text("悬浮提词")
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(Color(white: 0.3))
-                        .cornerRadius(6)
+                Button(action: onDelete) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 20))
+                        Text("删除")
+                            .font(.system(size: 12))
+                    }
+                    .foregroundColor(.white)
+                    .frame(width: deleteButtonWidth)
+                    .frame(maxHeight: .infinity)
+                    .background(Color.red)
+                    .cornerRadius(12)
                 }
             }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.12))
-        .cornerRadius(12)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            onEdit()
-        }
-        .contextMenu {
-            Button(role: .destructive, action: onDelete) {
-                Label("删除", systemImage: "trash")
+
+            // 主内容卡片
+            VStack(alignment: .leading, spacing: 8) {
+                Text(script.displayTitle)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+
+                Text(script.previewContent)
+                    .font(.system(size: 14))
+                    .foregroundColor(.gray)
+                    .lineLimit(1)
+
+                HStack {
+                    Text(script.formattedDate)
+                        .font(.system(size: 12))
+                        .foregroundColor(.gray.opacity(0.7))
+
+                    Spacer()
+
+                    Button(action: onTeleprompter) {
+                        Text("悬浮提词")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color(white: 0.3))
+                            .cornerRadius(6)
+                    }
+                }
             }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color(white: 0.12))
+            .cornerRadius(12)
+            .offset(x: offset)
+            .gesture(
+                DragGesture()
+                    .onChanged { gesture in
+                        isSwiping = true
+                        let translation = gesture.translation.width
+                        if translation < 0 {
+                            offset = max(translation, -deleteButtonWidth)
+                        } else if offset < 0 {
+                            offset = min(0, offset + translation)
+                        }
+                    }
+                    .onEnded { gesture in
+                        isSwiping = false
+                        if offset < -deleteButtonWidth / 2 {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                offset = -deleteButtonWidth
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                offset = 0
+                            }
+                        }
+                    }
+            )
+            .simultaneousGesture(
+                TapGesture()
+                    .onEnded {
+                        if offset < 0 {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                offset = 0
+                            }
+                        } else if !isSwiping {
+                            onEdit()
+                        }
+                    }
+            )
         }
     }
 }
