@@ -92,8 +92,12 @@ struct FloatingTeleprompterView: View {
         isScrolling = true
         timer = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
             if isScrolling {
-                // 速度范围：1-10 点/帧
-                let speed = 1 + settings.scrollSpeed * 9
+                // 根据字号计算行高
+                let lineHeight = settings.fontSize + 12
+                // 每秒滚动的距离 = 行高 / 秒数
+                let pointsPerSecond = lineHeight / CGFloat(settings.scrollSpeed)
+                // 每帧滚动的距离 (30fps)
+                let speed = pointsPerSecond / 30.0
                 scrollOffset += speed
             }
         }

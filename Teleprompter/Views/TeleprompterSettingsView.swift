@@ -19,11 +19,23 @@ struct TeleprompterSettingsView: View {
                         PreviewCard(content: script.content, settings: settings)
 
                         // 滚动速度
-                        SettingSlider(
-                            title: "滚动速度",
-                            value: $settings.scrollSpeed,
-                            range: 0.1...1.0
-                        )
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("滚动速度")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(.white)
+                                Spacer()
+                                Text(String(format: "%.1f 秒/行", settings.scrollSpeed))
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.gray)
+                            }
+                            SettingSlider(
+                                title: "",
+                                value: $settings.scrollSpeed,
+                                range: 1.0...10.0
+                            )
+                        }
+                        .padding(.horizontal)
 
                         // 字号
                         SettingSlider(
@@ -133,19 +145,23 @@ struct PreviewCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(lines.prefix(5).enumerated()), id: \.offset) { index, line in
-                Text(line)
-                    .font(.system(size: settings.fontSize * 0.7))
-                    .foregroundColor(index == 0 ? settings.textColor : .gray)
-                    .lineLimit(2)
+        GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(lines.prefix(5).enumerated()), id: \.offset) { index, line in
+                    Text(line)
+                        .font(.system(size: settings.fontSize * 0.5))
+                        .foregroundColor(index == 0 ? settings.textColor : .gray)
+                        .lineLimit(1)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(Color(white: 0.12))
+            .cornerRadius(12)
+            .rotationEffect(.degrees(Double(settings.rotation)))
+            .frame(width: geometry.size.width, height: 150, alignment: .center)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .background(Color(white: 0.12))
-        .cornerRadius(12)
-        .rotationEffect(.degrees(Double(settings.rotation)))
+        .frame(height: 150)
         .padding(.horizontal)
     }
 }
@@ -206,15 +222,20 @@ struct ColorButton: View {
 
     var body: some View {
         Button(action: action) {
-            Circle()
-                .fill(color)
-                .frame(width: 40, height: 40)
-                .aspectRatio(1, contentMode: .fit)
-                .overlay(
+            ZStack {
+                Circle()
+                    .fill(color)
+                    .frame(width: 40, height: 40)
+
+                if isSelected {
                     Circle()
-                        .stroke(Color.white, lineWidth: isSelected ? 3 : 0)
-                )
+                        .strokeBorder(Color.white, lineWidth: 3)
+                        .frame(width: 40, height: 40)
+                }
+            }
+            .frame(width: 44, height: 44)
         }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 

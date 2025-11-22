@@ -1,9 +1,9 @@
 import SwiftUI
 
 struct TeleprompterSettings {
-    var scrollSpeed: Double = 0.3  // 0.0 - 1.0
+    var scrollSpeed: Double = 3.0  // 1.0 - 10.0 秒每行
     var fontSize: CGFloat = 24
-    var rotation: Int = 0  // 0 or 90
+    var rotation: Int = 0  // 0, 90, 180, 270
     var textColor: Color = .green
 
     static let availableColors: [Color] = [
