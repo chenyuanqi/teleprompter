@@ -12,80 +12,110 @@ struct FloatingTeleprompterView: View {
     @State private var contentHeight: CGFloat = 0
     @State private var viewHeight: CGFloat = 0
     @State private var timer: Timer?
+    @State private var windowPosition: CGPoint = CGPoint(x: UIScreen.main.bounds.width / 2, y: 150)
+    @State private var backgroundOpacity: Double = 0.7
+    @State private var showControls = true
+    @State private var controlsTimer: Timer?
 
     // 悬浮窗尺寸
-    private let windowWidth: CGFloat = UIScreen.main.bounds.width - 40
-    private let windowHeight: CGFloat = 200
+    @State private var windowWidth: CGFloat = UIScreen.main.bounds.width - 40
+    @State private var windowHeight: CGFloat = 220
 
     var body: some View {
         ZStack {
-            // 半透明背景，可以看到下面的内容
-            Color.black.opacity(0.3)
+            // 全透明背景，让相机画面完全可见
+            Color.clear
                 .ignoresSafeArea()
+                .contentShape(Rectangle())
                 .onTapGesture {
-                    // 点击背景不做任何事
+                    toggleControls()
                 }
 
-            VStack {
-                // 悬浮窗
+            // 悬浮提词器窗口
+            VStack(spacing: 0) {
+                // 控制栏（自动隐藏）
+                if showControls {
+                    HStack(spacing: 16) {
+                        // 关闭按钮
+                        Button(action: { dismiss() }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 28))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.5), radius: 4)
+                        }
+
+                        Spacer()
+
+                        // 背景透明度控制
+                        Button(action: {
+                            backgroundOpacity = backgroundOpacity > 0.3 ? 0.3 : 0.7
+                        }) {
+                            Image(systemName: backgroundOpacity > 0.5 ? "circle.fill" : "circle")
+                                .font(.system(size: 24))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.5), radius: 4)
+                        }
+
+                        // 暂停/播放
+                        Button(action: togglePause) {
+                            Image(systemName: isScrolling ? "pause.circle.fill" : "play.circle.fill")
+                                .font(.system(size: 28))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.5), radius: 4)
+                        }
+
+                        // 重新开始
+                        Button(action: restartScrolling) {
+                            Image(systemName: "arrow.counterclockwise.circle.fill")
+                                .font(.system(size: 28))
+                                .foregroundColor(.white)
+                                .shadow(color: .black.opacity(0.5), radius: 4)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+                    .background(Color.black.opacity(0.5))
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                // 提词器窗口
                 ZStack {
                     // 窗口背景
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.black.opacity(0.9))
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(Color.black.opacity(backgroundOpacity))
 
-                    VStack(spacing: 0) {
-                        // 顶部工具栏
-                        HStack {
-                            Button(action: { dismiss() }) {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.white)
-                                    .frame(width: 30, height: 30)
-                            }
-
-                            Spacer()
-
-                            // 画中画按钮（装饰性）
-                            Image(systemName: "pip.enter")
-                                .font(.system(size: 16))
-                                .foregroundColor(.white.opacity(0.7))
+                    // 滚动内容区域
+                    GeometryReader { geometry in
+                        TeleprompterContentView(
+                            content: script.content,
+                            settings: settings,
+                            scrollOffset: $scrollOffset,
+                            contentHeight: $contentHeight,
+                            isScrolling: $isScrolling,
+                            onRestart: { },
+                            onTogglePause: { }
+                        )
+                        .onAppear {
+                            viewHeight = geometry.size.height
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 8)
-
-                        // 滚动内容区域
-                        GeometryReader { geometry in
-                            ScrollViewReader { scrollProxy in
-                                TeleprompterContentView(
-                                    content: script.content,
-                                    settings: settings,
-                                    scrollOffset: $scrollOffset,
-                                    contentHeight: $contentHeight,
-                                    isScrolling: $isScrolling,
-                                    onRestart: { restartScrolling() },
-                                    onTogglePause: { togglePause() }
-                                )
-                                .onAppear {
-                                    viewHeight = geometry.size.height
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.bottom, 12)
                     }
+                    .padding(16)
                 }
                 .frame(width: windowWidth, height: windowHeight)
                 .rotationEffect(.degrees(Double(settings.rotation)))
+                .shadow(color: .black.opacity(0.3), radius: 10)
 
                 Spacer()
             }
-            .padding(.top, 60)
+            .padding(.top, showControls ? 70 : 20)
         }
         .onAppear {
             startScrolling()
+            startControlsTimer()
         }
         .onDisappear {
             stopScrolling()
+            stopControlsTimer()
         }
     }
 
@@ -111,11 +141,40 @@ struct FloatingTeleprompterView: View {
 
     private func togglePause() {
         isScrolling.toggle()
+        resetControlsTimer()
     }
 
     private func restartScrolling() {
         scrollOffset = 0
         isScrolling = true
+        resetControlsTimer()
+    }
+
+    private func toggleControls() {
+        withAnimation(.easeInOut(duration: 0.3)) {
+            showControls.toggle()
+        }
+        if showControls {
+            resetControlsTimer()
+        }
+    }
+
+    private func startControlsTimer() {
+        controlsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { _ in
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showControls = false
+            }
+        }
+    }
+
+    private func stopControlsTimer() {
+        controlsTimer?.invalidate()
+        controlsTimer = nil
+    }
+
+    private func resetControlsTimer() {
+        stopControlsTimer()
+        startControlsTimer()
     }
 }
 
@@ -127,8 +186,6 @@ struct TeleprompterContentView: View {
     @Binding var isScrolling: Bool
     let onRestart: () -> Void
     let onTogglePause: () -> Void
-
-    @State private var lastTapTime: Date = Date.distantPast
 
     var lines: [String] {
         content.components(separatedBy: .newlines)
@@ -158,13 +215,6 @@ struct TeleprompterContentView: View {
             .offset(y: -scrollOffset)
         }
         .clipped()
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            onRestart()
-        }
-        .onTapGesture(count: 1) {
-            onTogglePause()
-        }
     }
 
     private func getColorForLine(at index: Int, in geometry: GeometryProxy) -> Color {
