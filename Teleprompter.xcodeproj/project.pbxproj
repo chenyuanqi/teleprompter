@@ -16,6 +16,7 @@
 		E01000007 /* ScriptEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000017 /* ScriptEditorView.swift */; };
 		E01000008 /* TeleprompterSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000018 /* TeleprompterSettingsView.swift */; };
 		E01000009 /* FloatingTeleprompterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E01000019 /* FloatingTeleprompterView.swift */; };
+		E0100000A /* LaunchScreenView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E0100001A /* LaunchScreenView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -29,6 +30,7 @@
 		E01000017 /* ScriptEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScriptEditorView.swift; sourceTree = "<group>"; };
 		E01000018 /* TeleprompterSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeleprompterSettingsView.swift; sourceTree = "<group>"; };
 		E01000019 /* FloatingTeleprompterView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingTeleprompterView.swift; sourceTree = "<group>"; };
+		E0100001A /* LaunchScreenView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LaunchScreenView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -86,6 +88,7 @@
 				E01000017 /* ScriptEditorView.swift */,
 				E01000018 /* TeleprompterSettingsView.swift */,
 				E01000019 /* FloatingTeleprompterView.swift */,
+				E0100001A /* LaunchScreenView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -168,6 +171,7 @@
 				E01000007 /* ScriptEditorView.swift in Sources */,
 				E01000008 /* TeleprompterSettingsView.swift in Sources */,
 				E01000009 /* FloatingTeleprompterView.swift in Sources */,
+				E0100000A /* LaunchScreenView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

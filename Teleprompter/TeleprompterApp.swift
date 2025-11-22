@@ -4,6 +4,7 @@ import SwiftData
 @main
 struct TeleprompterApp: App {
     let modelContainer: ModelContainer
+    @State private var isLaunching = true
 
     init() {
         do {
@@ -15,8 +16,23 @@ struct TeleprompterApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ZStack {
+                ContentView()
+                    .modelContainer(modelContainer)
+
+                if isLaunching {
+                    LaunchScreenView()
+                        .transition(.opacity)
+                        .zIndex(1)
+                }
+            }
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+                    withAnimation(.easeOut(duration: 0.5)) {
+                        isLaunching = false
+                    }
+                }
+            }
         }
-        .modelContainer(modelContainer)
     }
 }
