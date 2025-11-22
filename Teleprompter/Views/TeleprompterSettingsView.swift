@@ -20,23 +20,12 @@ struct TeleprompterSettingsView: View {
                         PreviewCard(content: script.content, settings: settings)
 
                         // 滚动速度
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack {
-                                Text("滚动速度")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Text(String(format: "%.1f 秒/行", settings.scrollSpeed))
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.gray)
-                            }
-                            SettingSlider(
-                                title: "",
-                                value: $settings.scrollSpeed,
-                                range: 1.0...10.0
-                            )
-                        }
-                        .padding(.horizontal)
+                        SettingSlider(
+                            title: "滚动速度",
+                            value: $settings.scrollSpeed,
+                            range: 1.0...10.0,
+                            valueFormatter: { String(format: "%.1f 秒/行", $0) }
+                        )
 
                         // 字号
                         SettingSlider(
@@ -45,7 +34,8 @@ struct TeleprompterSettingsView: View {
                                 get: { Double(settings.fontSize) },
                                 set: { settings.fontSize = CGFloat($0) }
                             ),
-                            range: 16...48
+                            range: 16...48,
+                            valueFormatter: { String(format: "%.0f", $0) }
                         )
 
                         // 文字旋转
@@ -171,12 +161,23 @@ struct SettingSlider: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
+    var valueFormatter: ((Double) -> String)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 16))
-                .foregroundColor(.white)
+            HStack {
+                Text(title)
+                    .font(.system(size: 16))
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                if let formatter = valueFormatter {
+                    Text(formatter(value))
+                        .font(.system(size: 14))
+                        .foregroundColor(.gray)
+                }
+            }
 
             HStack(spacing: 12) {
                 // 进度条
