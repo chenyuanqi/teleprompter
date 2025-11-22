@@ -12,118 +12,140 @@ struct ScriptListView: View {
     @State private var showingClearAllAlert = false
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-
-                ScrollView {
-                    VStack(spacing: 20) {
-                        // 新建台词卡片
-                        Button(action: {
-                            let newScript = Script(content: "")
-                            modelContext.insert(newScript)
-                            selectedScript = newScript
-                        }) {
-                            VStack(spacing: 12) {
-                                ZStack {
-                                    Circle()
-                                        .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                                        .frame(width: 50, height: 50)
-                                    Image(systemName: "plus")
-                                        .font(.system(size: 24))
-                                        .foregroundColor(.gray)
-                                }
-                                Text("新建台词")
-                                    .font(.system(size: 16))
-                                    .foregroundColor(.gray)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 140)
-                            .background(Color(white: 0.15))
-                            .cornerRadius(12)
-                        }
-                        .padding(.horizontal)
-
-                        // 台词草稿标题
-                        if !scripts.isEmpty {
-                            HStack {
-                                Text("台词草稿")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.white)
-                                Spacer()
-                                Button(action: {
-                                    showingClearAllAlert = true
-                                }) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "trash")
-                                            .font(.system(size: 12))
-                                        Text("全部清空")
-                                            .font(.system(size: 13))
-                                    }
-                                    .foregroundColor(.red.opacity(0.8))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.red.opacity(0.15))
-                                    .cornerRadius(6)
-                                }
-                            }
-                            .padding(.horizontal)
-
-                            // 台词列表
-                            VStack(spacing: 12) {
-                                ForEach(scripts) { script in
-                                    ScriptRowView(
-                                        script: script,
-                                        onEdit: {
-                                            selectedScript = script
-                                        },
-                                        onTeleprompter: {
-                                            scriptForTeleprompter = script
-                                        },
-                                        onDelete: {
-                                            scriptToDelete = script
-                                            showingDeleteAlert = true
-                                        }
-                                    )
-                                }
-                            }
-                            .padding(.horizontal)
-                        }
-                    }
-                    .padding(.top, 20)
+        navigationContent
+            .sheet(item: $selectedScript) { script in
+                ScriptEditorView(script: script)
+                    .modelContainer(modelContext.container)
+            }
+            .sheet(item: $scriptForTeleprompter) { script in
+                TeleprompterSettingsView(script: script)
+                    .modelContainer(modelContext.container)
+            }
+            .alert("确认删除", isPresented: $showingDeleteAlert, presenting: scriptToDelete) { script in
+                Button("取消", role: .cancel) { }
+                Button("删除", role: .destructive) {
+                    deleteScript(script)
                 }
+            } message: { script in
+                Text("确定要删除「\(script.displayTitle)」吗？此操作无法撤销。")
             }
-            .navigationTitle("元气提词器")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .toolbarBackground(Color.black, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-        }
-        .sheet(item: $selectedScript) { script in
-            ScriptEditorView(script: script)
-                .environment(\.modelContainer, modelContext.container)
-        }
-        .sheet(item: $scriptForTeleprompter) { script in
-            TeleprompterSettingsView(script: script)
-                .environment(\.modelContainer, modelContext.container)
-        }
-        .alert("确认删除", isPresented: $showingDeleteAlert, presenting: scriptToDelete) { script in
-            Button("取消", role: .cancel) { }
-            Button("删除", role: .destructive) {
-                deleteScript(script)
+            .alert("确认清空", isPresented: $showingClearAllAlert) {
+                Button("取消", role: .cancel) { }
+                Button("全部清空", role: .destructive) {
+                    clearAllScripts()
+                }
+            } message: {
+                Text("确定要清空全部台词吗？此操作无法撤销。")
             }
-        } message: { script in
-            Text("确定要删除「\(script.displayTitle)」吗？此操作无法撤销。")
+            .preferredColorScheme(.dark)
+    }
+
+    private var navigationContent: some View {
+        NavigationStack {
+            mainContent
+                .navigationTitle("元气提词器")
+                .navigationBarTitleDisplayMode(.large)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .toolbarBackground(Color.black, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
         }
-        .alert("确认清空", isPresented: $showingClearAllAlert) {
-            Button("取消", role: .cancel) { }
-            Button("全部清空", role: .destructive) {
-                clearAllScripts()
+    }
+
+    private var mainContent: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            ScrollView {
+                VStack(spacing: 20) {
+                    newScriptButton
+
+                    if !scripts.isEmpty {
+                        scriptListSection
+                    }
+                }
+                .padding(.top, 20)
             }
-        } message: {
-            Text("确定要清空全部台词吗？此操作无法撤销。")
         }
-        .preferredColorScheme(.dark)
+    }
+
+    private var newScriptButton: some View {
+        Button(action: {
+            let newScript = Script(content: "")
+            modelContext.insert(newScript)
+            selectedScript = newScript
+        }) {
+            VStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .stroke(Color.gray.opacity(0.5), lineWidth: 1)
+                        .frame(width: 50, height: 50)
+                    Image(systemName: "plus")
+                        .font(.system(size: 24))
+                        .foregroundColor(.gray)
+                }
+                Text("新建台词")
+                    .font(.system(size: 16))
+                    .foregroundColor(.gray)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 140)
+            .background(Color(white: 0.15))
+            .cornerRadius(12)
+        }
+        .padding(.horizontal)
+    }
+
+    private var scriptListSection: some View {
+        VStack(spacing: 12) {
+            scriptHeader
+            scriptList
+        }
+    }
+
+    private var scriptHeader: some View {
+        HStack {
+            Text("台词草稿")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: {
+                showingClearAllAlert = true
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                    Text("全部清空")
+                        .font(.system(size: 13))
+                }
+                .foregroundColor(.red.opacity(0.8))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.red.opacity(0.15))
+                .cornerRadius(6)
+            }
+        }
+        .padding(.horizontal)
+    }
+
+    private var scriptList: some View {
+        VStack(spacing: 12) {
+            ForEach(scripts) { script in
+                ScriptRowView(
+                    script: script,
+                    onEdit: {
+                        selectedScript = script
+                    },
+                    onTeleprompter: {
+                        scriptForTeleprompter = script
+                    },
+                    onDelete: {
+                        scriptToDelete = script
+                        showingDeleteAlert = true
+                    }
+                )
+            }
+        }
+        .padding(.horizontal)
     }
 
     private func deleteScript(_ script: Script) {
