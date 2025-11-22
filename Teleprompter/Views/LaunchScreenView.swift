@@ -85,7 +85,7 @@ struct LaunchScreenView: View {
 
                 // 应用名称
                 VStack(spacing: 8) {
-                    Text("提词器")
+                    Text("元气提词器")
                         .font(.system(size: 42, weight: .bold, design: .rounded))
                         .foregroundStyle(
                             LinearGradient(

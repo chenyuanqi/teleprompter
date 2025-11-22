@@ -77,7 +77,7 @@ struct ScriptListView: View {
                     .padding(.top, 20)
                 }
             }
-            .navigationTitle("提词器")
+            .navigationTitle("元气提词器")
             .navigationBarTitleDisplayMode(.large)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbarBackground(Color.black, for: .navigationBar)
