@@ -366,11 +366,13 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     @Published var isGeneratingVideo = false
     @Published var errorMessage: String?
     @Published var playerLayer: AVPlayerLayer?
+    @Published var autoRestartAttempted = false  // 标记是否已尝试自动重启
 
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
     private var sceneObserver: NSObjectProtocol?
+    private var audioInterruptionObserver: NSObjectProtocol?
     private var countdownTimer: Timer?
     private var countdownValue: Int = 3
 
@@ -378,31 +380,102 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         super.init()
         setupAudioSession()
         setupSceneObserver()
+        setupAudioInterruptionObserver()
     }
 
     private func setupSceneObserver() {
-        // 监听应用进入前台/后台事件
+        // 监听应用场景激活事件
         sceneObserver = NotificationCenter.default.addObserver(
             forName: UIScene.didActivateNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
+            guard let self = self else { return }
+
             if let scene = notification.object as? UIWindowScene {
-                print("📱 Scene 已激活，状态: \(scene.activationState.rawValue)")
-            } else {
-                print("📱 Scene 已激活 (前台活跃状态)")
+                let state = scene.activationState
+                let stateDescription = state == .foregroundActive ? "foregroundActive(活跃)" :
+                                      state == .foregroundInactive ? "foregroundInactive(非活跃)" :
+                                      "其他(\(state.rawValue))"
+                print("📱 Scene 状态变化: \(stateDescription)")
+
+                // 如果场景重新激活，且画中画之前被停止了，提示用户可以重启
+                if state == .foregroundActive, !self.isActive, self.player != nil {
+                    print("💡 场景已激活，画中画可以重新启动")
+                }
             }
+        }
+    }
+
+    private func setupAudioInterruptionObserver() {
+        // 监听音频会话中断（比如系统录屏启动）
+        audioInterruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self else { return }
+            guard let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+            }
+
+            switch type {
+            case .began:
+                // 音频会话被中断（录屏开始）
+                print("🎙️ 音频会话被中断（可能是录屏开始）")
+                // 不需要做任何事，让画中画继续
+
+            case .ended:
+                // 音频会话中断结束（录屏停止）
+                print("🎙️ 音频会话中断结束（可能是录屏停止）")
+
+                // 检查是否应该恢复播放
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if options.contains(.shouldResume) {
+                        print("🎙️ 应该恢复播放")
+                        // 重新激活音频会话
+                        self.reactivateAudioSession()
+                        // 如果画中画还在运行且播放器已暂停，恢复播放
+                        if self.isActive, let player = self.player, player.rate == 0 {
+                            print("▶️ 恢复播放")
+                            player.play()
+                        }
+                    }
+                }
+
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func reactivateAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setActive(true, options: [])
+            print("✅ 音频会话已重新激活")
+        } catch {
+            print("❌ 重新激活音频会话失败: \(error)")
         }
     }
 
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 使用 playback 类别以支持画中画，同时设置 mixWithOthers 选项
-            // mixWithOthers: 允许与其他音频同时播放，不会被其他 App 打断
-            try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            // 使用 playback 类别以支持画中画，同时设置多个选项：
+            // - mixWithOthers: 允许与其他音频同时播放
+            // - duckOthers: 降低其他音频的音量，而不是停止它们
+            // - allowAirPlay: 允许 AirPlay（虽然我们用不到，但保持兼容性）
+            try audioSession.setCategory(
+                .playback,
+                mode: .default,
+                options: [.mixWithOthers, .duckOthers]
+            )
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            print("✅ 音频会话配置成功：playback 模式 + mixWithOthers，支持画中画且允许与其他 App 混合")
+            print("✅ 音频会话配置成功：playback + mixWithOthers + duckOthers，最大化兼容性")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
@@ -414,6 +487,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             errorMessage = "此设备不支持画中画功能"
             return
         }
+
+        // 清除错误信息和自动重启标记
+        errorMessage = nil
+        autoRestartAttempted = false
 
         // 先清理之前的资源（如果有的话）
         if pipController != nil || player != nil {
@@ -646,6 +723,9 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         if let observer = sceneObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = audioInterruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         stopPiP()
     }
 }
@@ -695,9 +775,73 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        print("PiP did stop")
+        print("🛑 PiP did stop")
         DispatchQueue.main.async {
             self.isActive = false
+
+            // 检查是否应该自动重启（比如因为相机打开导致的停止）
+            self.checkAndAutoRestart()
+        }
+    }
+
+    private func checkAndAutoRestart() {
+        // 重置自动重启标记
+        autoRestartAttempted = false
+
+        // 等待一小段时间，看场景是否会重新激活
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+
+            // 如果已经重新激活了，不需要自动重启
+            if self.isActive {
+                print("✅ 画中画已经重新启动")
+                return
+            }
+
+            // 检查场景状态
+            let scenes = UIApplication.shared.connectedScenes
+            guard let windowScene = scenes.first as? UIWindowScene else {
+                print("⚠️ 未找到窗口场景")
+                return
+            }
+
+            let state = windowScene.activationState
+            let stateDesc = state == .foregroundActive ? "✅ foregroundActive" :
+                           state == .foregroundInactive ? "⚠️ foregroundInactive" :
+                           "❌ background/unattached"
+            print("📱 检查场景状态以决定是否自动重启: \(stateDesc)")
+
+            // 如果场景重新激活了，且用户没有手动关闭，尝试自动重启
+            if state == .foregroundActive,
+               let player = self.player,
+               let pipController = self.pipController,
+               !self.isActive,
+               !self.autoRestartAttempted {
+
+                self.autoRestartAttempted = true
+                print("🔄 场景已重新激活，尝试自动重启画中画...")
+
+                // 先确保播放器准备好
+                if player.currentItem?.status == .readyToPlay {
+                    // 等待一小段时间确保场景完全稳定
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        if pipController.isPictureInPicturePossible {
+                            print("✅ 自动重启画中画")
+                            self.errorMessage = nil  // 清除错误信息
+                            pipController.startPictureInPicture()
+                        } else {
+                            print("⚠️ 画中画暂时不可用，无法自动重启")
+                            self.errorMessage = "画中画已停止\n可能原因：相机或其他应用占用\n请手动重新启动"
+                        }
+                    }
+                } else {
+                    print("⚠️ 播放器未准备好")
+                    self.errorMessage = "画中画已停止\n请手动重新启动"
+                }
+            } else if state != .foregroundActive {
+                print("⚠️ 场景未激活，不尝试自动重启")
+                self.errorMessage = "画中画已停止\n当前应用未在前台\n请返回应用后重新启动"
+            }
         }
     }
 
