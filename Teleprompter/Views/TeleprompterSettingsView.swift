@@ -14,14 +14,15 @@ struct TeleprompterSettingsView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
+            VStack(spacing: 0) {
+                // 预览区域 - 固定在顶部
+                PreviewCard(content: script.content, settings: settings)
+                    .frame(height: 280)
+                    .frame(maxWidth: .infinity)
 
+                // 可滚动的设置区域
                 ScrollView {
                     VStack(spacing: 24) {
-                        // 预览区域
-                        PreviewCard(content: script.content, settings: settings)
-
                         // 滚动速度
                         SettingSlider(
                             title: "滚动速度",
@@ -90,68 +91,67 @@ struct TeleprompterSettingsView: View {
                     }
                     .padding(.top, 20)
                 }
+                .background(Color.black)
 
                 // 底部按钮
-                VStack {
-                    Spacer()
-
-                    VStack(spacing: 12) {
-                        // 画中画悬浮窗按钮（推荐）
-                        Button(action: {
-                            showingPiPTeleprompter = true
-                        }) {
-                            HStack {
-                                Image(systemName: "pip.enter")
-                                    .font(.system(size: 18))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack {
-                                        Text("开启画中画悬浮")
-                                            .font(.system(size: 18, weight: .medium))
-                                        Text("推荐")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundColor(.yellow)
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.yellow.opacity(0.2))
-                                            .cornerRadius(4)
-                                    }
-                                    Text("可切换到其他 App")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.white.opacity(0.7))
+                VStack(spacing: 12) {
+                    // 画中画悬浮窗按钮（推荐）
+                    Button(action: {
+                        showingPiPTeleprompter = true
+                    }) {
+                        HStack {
+                            Image(systemName: "pip.enter")
+                                .font(.system(size: 18))
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text("开启画中画悬浮")
+                                        .font(.system(size: 18, weight: .medium))
+                                    Text("推荐")
+                                        .font(.system(size: 12, weight: .bold))
+                                        .foregroundColor(.yellow)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.yellow.opacity(0.2))
+                                        .cornerRadius(4)
                                 }
-                                Spacer()
+                                Text("可切换到其他 App")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.white.opacity(0.7))
                             }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 14)
-                            .background(Color(red: 1.0, green: 0.3, blue: 0.4))
-                            .cornerRadius(25)
+                            Spacer()
                         }
-
-                        // 普通悬浮窗按钮
-                        Button(action: {
-                            showingTeleprompter = true
-                        }) {
-                            HStack {
-                                Image(systemName: "rectangle.inset.filled")
-                                    .font(.system(size: 18))
-                                Text("App 内悬浮窗")
-                                    .font(.system(size: 16))
-                                Spacer()
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 14)
-                            .background(Color(white: 0.3))
-                            .cornerRadius(25)
-                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 14)
+                        .background(Color(red: 1.0, green: 0.3, blue: 0.4))
+                        .cornerRadius(25)
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 30)
+
+                    // 普通悬浮窗按钮
+                    Button(action: {
+                        showingTeleprompter = true
+                    }) {
+                        HStack {
+                            Image(systemName: "rectangle.inset.filled")
+                                .font(.system(size: 18))
+                            Text("App 内悬浮窗")
+                                .font(.system(size: 16))
+                            Spacer()
+                        }
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 14)
+                        .background(Color(white: 0.3))
+                        .cornerRadius(25)
+                    }
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 30)
+                .background(Color.black)
             }
+            .background(Color.black)
             .navigationTitle("悬浮提词预览")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -181,28 +181,35 @@ struct PreviewCard: View {
     let settings: TeleprompterSettings
 
     var lines: [String] {
-        content.components(separatedBy: .newlines).filter { !$0.isEmpty }
+        content.components(separatedBy: .newlines)
     }
 
     var body: some View {
-        GeometryReader { geometry in
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(lines.prefix(5).enumerated()), id: \.offset) { index, line in
-                    Text(line)
-                        .font(.system(size: settings.fontSize * 0.5))
-                        .foregroundColor(index == 0 ? settings.textColor : .gray)
-                        .lineLimit(1)
+        ZStack {
+            // 背景框 - 不旋转
+            Color(white: 0.12)
+                .ignoresSafeArea(edges: .top)
+
+            // 可滚动的内容区域 - 旋转
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                        if !line.isEmpty {
+                            Text(line)
+                                .font(.system(size: settings.fontSize * 0.5))
+                                .foregroundColor(index == 0 ? settings.textColor : .gray)
+                        } else {
+                            // 保留空行
+                            Text(" ")
+                                .font(.system(size: settings.fontSize * 0.5))
+                        }
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
-            .background(Color(white: 0.12))
-            .cornerRadius(12)
             .rotationEffect(.degrees(Double(settings.rotation)))
-            .frame(width: geometry.size.width, height: 150, alignment: .center)
         }
-        .frame(height: 150)
-        .padding(.horizontal)
     }
 }
 
