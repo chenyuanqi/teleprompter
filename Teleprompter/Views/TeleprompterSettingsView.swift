@@ -8,8 +8,30 @@ struct TeleprompterSettingsView: View {
 
     @Bindable var script: Script
 
-    @State private var settings = TeleprompterSettings()
+    // 使用 @AppStorage 持久化存储设置
+    @AppStorage("scrollSpeed") private var scrollSpeed: Double = 3.0
+    @AppStorage("fontSize") private var fontSize: Double = 24.0
+    @AppStorage("rotation") private var rotation: Int = 0
+    @AppStorage("textColorHex") private var textColorHex: String = "#33CC66FF"
+
     @StateObject private var pipController = PiPTeleprompterController()
+
+    // 计算属性：从存储的值创建 settings 对象
+    private var settings: TeleprompterSettings {
+        TeleprompterSettings(
+            scrollSpeed: scrollSpeed,
+            fontSize: CGFloat(fontSize),
+            rotation: rotation,
+            textColor: TeleprompterSettings.hexToColor(textColorHex)
+        )
+    }
+
+    // 辅助方法：比较两个颜色是否相等
+    private func areColorsEqual(_ color1: Color, _ color2: Color) -> Bool {
+        let hex1 = TeleprompterSettings.colorToHex(color1)
+        let hex2 = TeleprompterSettings.colorToHex(color2)
+        return hex1 == hex2
+    }
 
     var body: some View {
         NavigationStack {
@@ -33,7 +55,7 @@ struct TeleprompterSettingsView: View {
                         // 滚动速度
                         SettingSlider(
                             title: "滚动速度",
-                            value: $settings.scrollSpeed,
+                            value: $scrollSpeed,
                             range: 1.0...10.0,
                             valueFormatter: { String(format: "%.1f 秒/行", $0) }
                         )
@@ -41,10 +63,7 @@ struct TeleprompterSettingsView: View {
                         // 字号
                         SettingSlider(
                             title: "字号",
-                            value: Binding(
-                                get: { Double(settings.fontSize) },
-                                set: { settings.fontSize = CGFloat($0) }
-                            ),
+                            value: $fontSize,
                             range: 16...48,
                             valueFormatter: { String(format: "%.0f", $0) }
                         )
@@ -56,11 +75,11 @@ struct TeleprompterSettingsView: View {
                                 .foregroundColor(.white)
                             Spacer()
                             Button(action: {
-                                settings.rotation = (settings.rotation + 90) % 360
+                                rotation = (rotation + 90) % 360
                             }) {
                                 HStack(spacing: 4) {
                                     Image(systemName: "rectangle.portrait.rotate")
-                                    Text("\(settings.rotation)°")
+                                    Text("\(rotation)°")
                                 }
                                 .font(.system(size: 14))
                                 .foregroundColor(.white)
@@ -83,9 +102,9 @@ struct TeleprompterSettingsView: View {
                                     ForEach(Array(TeleprompterSettings.availableColors.enumerated()), id: \.offset) { index, color in
                                         ColorButton(
                                             color: color,
-                                            isSelected: settings.textColor == color,
+                                            isSelected: areColorsEqual(settings.textColor, color),
                                             action: {
-                                                settings.textColor = color
+                                                textColorHex = TeleprompterSettings.colorToHex(color)
                                             }
                                         )
                                     }
@@ -465,7 +484,8 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                     DispatchQueue.main.async {
                         // 等待 playerLayer 完全渲染，同时确保 Scene 处于活跃状态
                         // 增加延迟以避免 Scene 状态问题（从 foregroundInactive 变为 foregroundActive）
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        // 延迟 1.5 秒给足够的时间让场景激活
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                             self.attemptStartPiP()
                         }
                     }
@@ -494,65 +514,51 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         print("当前连接的场景数: \(scenes.count)")
 
         // 打印所有场景的状态以便调试
+        var allSceneStates: [String] = []
         for (index, scene) in scenes.enumerated() {
             if let windowScene = scene as? UIWindowScene {
-                print("Scene \(index): 激活状态 = \(windowScene.activationState.rawValue)")
-            }
-        }
-
-        // 查找 foregroundActive 的场景
-        // 注意：ActivationState 的值是 unattached=-1, foregroundInactive=0, foregroundActive=1, background=2
-        var foundActiveScene: UIWindowScene?
-        for scene in scenes {
-            if let windowScene = scene as? UIWindowScene {
-                if windowScene.activationState == .foregroundActive {
-                    print("✅ 找到 foregroundActive 的场景: rawValue=\(windowScene.activationState.rawValue)")
-                    foundActiveScene = windowScene
-                    break
+                let state = windowScene.activationState
+                let stateName: String
+                switch state {
+                case .foregroundActive: stateName = "foregroundActive(1)"
+                case .foregroundInactive: stateName = "foregroundInactive(0)"
+                case .background: stateName = "background(2)"
+                case .unattached: stateName = "unattached(-1)"
+                @unknown default: stateName = "unknown(\(state.rawValue))"
                 }
+                allSceneStates.append("Scene\(index)=\(stateName)")
+                print("Scene \(index): 状态 = \(stateName)")
             }
         }
 
-        // 如果找不到活跃场景，使用第一个场景
-        guard let windowScene = foundActiveScene ?? scenes.first as? UIWindowScene else {
-            print("❌ 未找到 WindowScene")
+        // 直接使用第一个场景（简化逻辑）
+        guard let windowScene = scenes.first as? UIWindowScene else {
+            print("❌ 未找到任何 WindowScene")
             errorMessage = "应用窗口未就绪"
             return
         }
 
-        let activationState = windowScene.activationState
-        let stateDescription: String
-        switch activationState {
-        case .foregroundActive:
-            stateDescription = "foregroundActive"
-        case .foregroundInactive:
-            stateDescription = "foregroundInactive"
-        case .background:
-            stateDescription = "background"
-        case .unattached:
-            stateDescription = "unattached"
-        @unknown default:
-            stateDescription = "unknown(\(activationState.rawValue))"
-        }
-        print("使用的 Scene 激活状态: \(activationState.rawValue) (\(stateDescription))")
-        print("是否找到活跃场景: \(foundActiveScene != nil)")
+        // 检查场景状态（仅用于日志）
+        let state = windowScene.activationState
+        print("使用第一个场景，状态: \(state == .foregroundActive ? "foregroundActive" : state == .foregroundInactive ? "foregroundInactive" : "其他")")
 
-        // 必须是 foregroundActive 才能启动画中画
-        if activationState != .foregroundActive {
-            print("❌ Scene 状态不是 foregroundActive，需要重试")
+        // 如果不是 foregroundActive，重试
+        if state != .foregroundActive {
+            print("❌ 场景不是 foregroundActive，需要重试")
 
-            // 重试最多 5 次，每次延迟 0.5 秒
             if retryCount < 5 {
                 print("⏳ 将在 0.5 秒后进行第 \(retryCount + 2) 次尝试")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     self.attemptStartPiP(retryCount: retryCount + 1)
                 }
             } else {
-                print("❌ 已重试 5 次，仍未成功")
+                print("❌ 已重试 5 次，应用始终不在前台活跃状态")
                 errorMessage = "应用未在前台活跃状态，请重试"
             }
-            return  // 重要：立即返回，不继续执行
+            return
         }
+
+        print("✅ 场景是 foregroundActive，准备启动画中画")
 
         // 确保画中画可用
         if !pipController.isPictureInPicturePossible {
