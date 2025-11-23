@@ -68,28 +68,28 @@ struct TeleprompterSettingsView: View {
                             valueFormatter: { String(format: "%.0f", $0) }
                         )
 
-                        // 文字旋转
-                        HStack {
-                            Text("文字旋转")
-                                .font(.system(size: 16))
-                                .foregroundColor(.white)
-                            Spacer()
-                            Button(action: {
-                                rotation = (rotation + 90) % 360
-                            }) {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "rectangle.portrait.rotate")
-                                    Text("\(rotation)°")
-                                }
-                                .font(.system(size: 14))
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color(white: 0.2))
-                                .cornerRadius(8)
-                            }
-                        }
-                        .padding(.horizontal)
+                        // 文字旋转 - 暂时注释掉
+                        // HStack {
+                        //     Text("文字旋转")
+                        //         .font(.system(size: 16))
+                        //         .foregroundColor(.white)
+                        //     Spacer()
+                        //     Button(action: {
+                        //         rotation = (rotation + 90) % 360
+                        //     }) {
+                        //         HStack(spacing: 4) {
+                        //             Image(systemName: "rectangle.portrait.rotate")
+                        //             Text("\(rotation)°")
+                        //         }
+                        //         .font(.system(size: 14))
+                        //         .foregroundColor(.white)
+                        //         .padding(.horizontal, 12)
+                        //         .padding(.vertical, 8)
+                        //         .background(Color(white: 0.2))
+                        //         .cornerRadius(8)
+                        //     }
+                        // }
+                        // .padding(.horizontal)
 
                         // 文字颜色
                         VStack(alignment: .leading, spacing: 12) {
@@ -744,12 +744,37 @@ class TeleprompterVideoRenderer {
     // 预处理后的行（已经按宽度拆分）
     private var wrappedLines: [String] = []
 
+    // 保存生成的视频文件 URL，用于清理
+    private var videoURL: URL?
+
     init(script: Script, settings: TeleprompterSettings) {
         self.script = script
         self.settings = settings
 
         // 在初始化时预先将内容按宽度拆分成多行
         self.wrappedLines = self.wrapContentToLines()
+
+        // 清理旧的临时视频文件
+        cleanupOldVideoFiles()
+    }
+
+    // 清理所有旧的提词器临时视频文件
+    private func cleanupOldVideoFiles() {
+        let tempDir = FileManager.default.temporaryDirectory
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+            let teleprompterFiles = files.filter { $0.lastPathComponent.hasPrefix("teleprompter_") && $0.pathExtension == "mp4" }
+
+            for file in teleprompterFiles {
+                try? FileManager.default.removeItem(at: file)
+            }
+
+            if !teleprompterFiles.isEmpty {
+                print("已清理 \(teleprompterFiles.count) 个旧的临时视频文件")
+            }
+        } catch {
+            print("清理旧视频文件失败: \(error.localizedDescription)")
+        }
     }
 
     func showCountdown(_ value: Int) {
@@ -813,10 +838,11 @@ class TeleprompterVideoRenderer {
             }
         }
 
-        // 添加后置空行（让最后几行停留在可见区域）
-        // 视频播放完会停在最后一帧，所以添加足够的空行让最后几行清晰可见
-        // 高亮区域在 40% 位置，下方还有 60% 空间，大约需要 3-4 行
-        for _ in 0..<4 {
+        // 添加后置空行（让最后几行能完整滚动并停留）
+        // 高亮区域在 40% 位置，需要足够的空行让最后一行能滚动到屏幕顶部
+        // 视频高度 960，高亮区域在 384，需要更多空行确保最后内容能完全向上滚动
+        // 增加到 15 行空行，确保所有内容都能完整显示
+        for _ in 0..<15 {
             result.append(" ")  // 空格占位
         }
 
@@ -827,6 +853,9 @@ class TeleprompterVideoRenderer {
     func createVideoFile() -> URL? {
         let tempDir = FileManager.default.temporaryDirectory
         let videoURL = tempDir.appendingPathComponent("teleprompter_\(UUID().uuidString).mp4")
+
+        // 保存 URL 用于后续清理
+        self.videoURL = videoURL
 
         // 删除已存在的文件
         try? FileManager.default.removeItem(at: videoURL)
@@ -1091,8 +1120,8 @@ class TeleprompterVideoRenderer {
         // 计算总内容高度
         let totalContentHeight = CGFloat(lines.count) * lineHeight
 
-        // 使用模运算实现无缝循环
-        let loopedOffset = offset.truncatingRemainder(dividingBy: totalContentHeight)
+        // 不使用循环，直接使用 offset（播放完就停止）
+        let currentOffset = offset
 
         // 高亮区域：屏幕中央偏上位置（从顶部算起 40%）
         let highlightY = videoSize.height * 0.4
@@ -1100,16 +1129,9 @@ class TeleprompterVideoRenderer {
         for (index, lineText) in lines.enumerated() {
             // 计算文字位置（从上往下滚动，下一句在下面）
             let yPosition = CGFloat(index) * lineHeight
-            var y = highlightY - yPosition + loopedOffset
+            let y = highlightY - yPosition + currentOffset
 
-            // 实现无缝循环：如果文字滚出顶部，在底部重复绘制
-            if y < -lineHeight {
-                y += totalContentHeight
-            }
-            // 如果文字滚出底部，在顶部重复绘制
-            if y > videoSize.height + lineHeight {
-                y -= totalContentHeight
-            }
+            // 不实现循环，允许文字滚动到屏幕外
 
             // 跳过屏幕外的文本
             guard y > -lineHeight && y < videoSize.height + lineHeight else { continue }
@@ -1153,6 +1175,16 @@ class TeleprompterVideoRenderer {
     }
 
     func stop() {
-        // 清理资源
+        // 清理视频文件
+        if let url = videoURL {
+            try? FileManager.default.removeItem(at: url)
+            print("已删除临时视频文件: \(url.lastPathComponent)")
+            videoURL = nil
+        }
+    }
+
+    deinit {
+        // 对象销毁时也清理视频文件
+        stop()
     }
 }
