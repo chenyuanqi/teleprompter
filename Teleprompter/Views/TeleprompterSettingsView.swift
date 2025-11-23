@@ -102,7 +102,10 @@ struct TeleprompterSettingsView: View {
                                     ForEach(Array(TeleprompterSettings.availableColors.enumerated()), id: \.offset) { index, color in
                                         ColorButton(
                                             color: color,
-                                            isSelected: areColorsEqual(settings.textColor, color),
+                                            isSelected: {
+                                                let colorHex = TeleprompterSettings.colorToHex(color)
+                                                return colorHex == textColorHex
+                                            }(),
                                             action: {
                                                 textColorHex = TeleprompterSettings.colorToHex(color)
                                             }
@@ -121,35 +124,8 @@ struct TeleprompterSettingsView: View {
 
                 // 底部按钮
                 VStack(spacing: 16) {
-                    // 状态显示
-                    if pipController.isGeneratingVideo {
-                        VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.2)
-                                .tint(Color(red: 1.0, green: 0.3, blue: 0.4))
-
-                            Text("正在生成画中画视频...")
-                                .font(.system(size: 14))
-                                .foregroundColor(.white.opacity(0.7))
-                        }
-                        .padding(.vertical, 20)
-                    } else if pipController.isActive {
-                        VStack(spacing: 12) {
-                            HStack {
-                                Circle()
-                                    .fill(Color.green)
-                                    .frame(width: 10, height: 10)
-                                Text("画中画已启动")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.green)
-                            }
-
-                            Text("现在可以切换到相机 App 录制视频")
-                                .font(.system(size: 12))
-                                .foregroundColor(.white.opacity(0.6))
-                        }
-                        .padding(.vertical, 20)
-                    } else if let errorMessage = pipController.errorMessage {
+                    // 状态显示 - 只显示错误信息
+                    if let errorMessage = pipController.errorMessage {
                         VStack(spacing: 8) {
                             Image(systemName: "exclamationmark.triangle")
                                 .font(.system(size: 24))
@@ -384,6 +360,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
     private var sceneObserver: NSObjectProtocol?
+    private var countdownOverlay: CountdownOverlayView?
 
     override init() {
         super.init()
@@ -424,6 +401,22 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             return
         }
 
+        // 先清理之前的资源（如果有的话）
+        if pipController != nil || player != nil {
+            print("检测到现有资源，先清理...")
+            cleanupResources()
+
+            // 等待一小段时间确保资源完全释放
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                self?.actuallyStartPiP(script: script, settings: settings)
+            }
+            return
+        }
+
+        actuallyStartPiP(script: script, settings: settings)
+    }
+
+    private func actuallyStartPiP(script: Script, settings: TeleprompterSettings) {
         isGeneratingVideo = true
         errorMessage = nil
 
@@ -477,8 +470,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
                     print("是否支持画中画: \(AVPictureInPictureController.isPictureInPictureSupported())")
 
-                    // 启动播放
+                    // 先播放，以便画中画能看到第一帧
                     player.play()
+                    // 立即暂停，等待画中画启动后再开始倒数
+                    player.pause()
 
                     // 等待下一个 RunLoop 周期，确保 playerLayer 已被添加到视图层级
                     DispatchQueue.main.async {
@@ -583,21 +578,39 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         print("✅ 已调用 startPictureInPicture()")
     }
 
-    func stopPiP() {
-        print("停止画中画...")
-        pipController?.stopPictureInPicture()
+    private func cleanupResources() {
+        print("清理资源...")
+
+        // 移除倒计时覆盖层
+        countdownOverlay?.removeFromSuperview()
+        countdownOverlay = nil
+
+        // 停止播放器
         player?.pause()
+
+        // 停止画中画（如果正在运行）
+        if let pip = pipController, pip.isPictureInPictureActive {
+            pip.stopPictureInPicture()
+        }
+
         videoRenderer?.stop()
 
-        // 清理资源，为下次启动做准备
+        // 清理所有资源
         pipController = nil
         player = nil
         playerLayer = nil
         videoRenderer = nil
 
+        print("资源清理完成")
+    }
+
+    func stopPiP() {
+        print("停止画中画...")
+        cleanupResources()
+
         isActive = false
         errorMessage = nil
-        print("画中画已停止并清理资源")
+        print("画中画已停止")
     }
 
     deinit {
@@ -618,7 +631,49 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
         print("PiP did start")
         DispatchQueue.main.async {
             self.isActive = true
+
+            // 显示倒计时覆盖层
+            self.showCountdownOverlay()
         }
+    }
+
+    private func showCountdownOverlay() {
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = windowScene.windows.first else { return }
+
+        // 创建倒计时覆盖视图
+        let overlayView = CountdownOverlayView()
+        overlayView.frame = window.bounds
+        overlayView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        window.addSubview(overlayView)
+        self.countdownOverlay = overlayView
+
+        // 开始倒计时
+        var countdown = 3
+        overlayView.updateCountdown(countdown)
+
+        func performCountdown() {
+            if countdown > 0 {
+                overlayView.updateCountdown(countdown)
+                countdown -= 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    performCountdown()
+                }
+            } else {
+                // 倒计时结束，移除覆盖层并开始播放
+                UIView.animate(withDuration: 0.3, animations: {
+                    overlayView.alpha = 0
+                }, completion: { _ in
+                    overlayView.removeFromSuperview()
+                    self.countdownOverlay = nil
+                })
+
+                print("▶️ 开始播放")
+                self.player?.play()
+            }
+        }
+
+        performCountdown()
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -645,6 +700,48 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
         // 用户点击 PiP 窗口时恢复界面
         completionHandler(true)
+    }
+}
+
+// MARK: - Countdown Overlay View
+class CountdownOverlayView: UIView {
+    private let countdownLabel: UILabel = {
+        let label = UILabel()
+        label.font = UIFont.systemFont(ofSize: 200, weight: .bold)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.shadowColor = UIColor.black.withAlphaComponent(0.5)
+        label.shadowOffset = CGSize(width: 0, height: 4)
+        return label
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        setupView()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupView()
+    }
+
+    private func setupView() {
+        backgroundColor = UIColor.black.withAlphaComponent(0.7)
+        addSubview(countdownLabel)
+        countdownLabel.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            countdownLabel.centerXAnchor.constraint(equalTo: centerXAnchor),
+            countdownLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+
+    func updateCountdown(_ count: Int) {
+        countdownLabel.text = "\(count)"
+        // 添加缩放动画
+        countdownLabel.transform = CGAffineTransform(scaleX: 0.5, y: 0.5)
+        UIView.animate(withDuration: 0.5, delay: 0, usingSpringWithDamping: 0.6, initialSpringVelocity: 0.8, options: [], animations: {
+            self.countdownLabel.transform = .identity
+        })
     }
 }
 
@@ -725,13 +822,15 @@ class TeleprompterVideoRenderer {
             var currentOffset: CGFloat = 0
 
             // 使用放大后的字号和滚动速度（与 drawText 保持一致）
-            let fontSize = settings.fontSize * 3.5
-            let lineHeight = fontSize + 20
-            // scrollSpeed 是每行滚动的秒数，所以每秒移动 lineHeight/scrollSpeed 像素
-            let pointsPerSecond = lineHeight / CGFloat(settings.scrollSpeed)
+            let fontSize = settings.fontSize * 6.0
+            let lineSpacing: CGFloat = 40
+            // 使用平均行高来计算滚动速度
+            // scrollSpeed 是每行滚动的秒数，所以每秒移动 averageLineHeight/scrollSpeed 像素
+            let averageLineHeight = fontSize + lineSpacing
+            let pointsPerSecond = averageLineHeight / CGFloat(settings.scrollSpeed)
             let speed = pointsPerSecond / CGFloat(fps)
 
-            print("滚动配置: 原始字号=\(settings.fontSize), 放大后字号=\(fontSize), 行高=\(lineHeight), 滚动速度=\(settings.scrollSpeed)秒/行, 每帧移动=\(speed)像素")
+            print("滚动配置: 原始字号=\(settings.fontSize), 放大后字号=\(fontSize), 平均行高=\(averageLineHeight), 滚动速度=\(settings.scrollSpeed)秒/行, 每帧移动=\(speed)像素")
 
             print("开始写入视频帧...")
 
@@ -831,41 +930,81 @@ class TeleprompterVideoRenderer {
         let lines = script.content.components(separatedBy: .newlines)
 
         // 横屏画中画，大幅放大字号以确保在画中画窗口中清晰可读
-        // 视频分辨率 1920x960 很大，放大 3.5 倍字号
-        let fontSize = settings.fontSize * 3.5
-        let lineHeight = fontSize + 20
+        // 视频分辨率 1920x960，画中画会缩小显示，所以需要放大 6 倍字号
+        let fontSize = settings.fontSize * 6.0
+        let lineSpacing: CGFloat = 60  // 行间距
+        let padding: CGFloat = 60
+        let maxWidth = videoSize.width - padding * 2
 
         // 不需要翻转坐标系，直接在 CGContext 中绘制
         context.saveGState()
 
-        // 计算总内容高度以实现循环滚动
-        let totalContentHeight = CGFloat(lines.filter { !$0.isEmpty }.count) * lineHeight
+        // 预先计算每一行的实际高度和累积位置
+        let font = CTFontCreateWithName("PingFang SC" as CFString, fontSize, nil)
+
+        struct LineInfo {
+            let text: String
+            let height: CGFloat
+            let yPosition: CGFloat  // 累积的 Y 位置
+        }
+
+        var lineInfos: [LineInfo] = []
+        var totalContentHeight: CGFloat = 0
+
+        for line in lines {
+            guard !line.isEmpty else { continue }
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor(settings.textColor).cgColor
+            ]
+            let attributedString = NSAttributedString(string: line, attributes: attributes)
+            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
+
+            let suggestedSize = CTFramesetterSuggestFrameSizeWithConstraints(
+                framesetter,
+                CFRange(location: 0, length: attributedString.length),
+                nil,
+                CGSize(width: maxWidth, height: CGFloat.greatestFiniteMagnitude),
+                nil
+            )
+
+            let lineInfo = LineInfo(
+                text: line,
+                height: suggestedSize.height,
+                yPosition: totalContentHeight
+            )
+
+            lineInfos.append(lineInfo)
+            totalContentHeight += suggestedSize.height + lineSpacing
+        }
+
         // 使用模运算实现无缝循环
         let loopedOffset = offset.truncatingRemainder(dividingBy: totalContentHeight)
 
         // 高亮区域：屏幕中央偏上位置（从顶部算起 40%）
         let highlightY = videoSize.height * 0.4
 
-        var drawnCount = 0
+        for lineInfo in lineInfos {
+            // 计算文字位置（从上往下滚动，下一句在下面）
+            // yPosition 是从顶部累积的距离，减去 loopedOffset 实现滚动
+            var y = highlightY - lineInfo.yPosition + loopedOffset
 
-        for (index, line) in lines.enumerated() {
-            guard !line.isEmpty else { continue }
-
-            // 计算文字位置（从底部向上滚动）
-            // y 坐标从屏幕底部开始，向上滚动
-            var y = videoSize.height - (CGFloat(index) * lineHeight - loopedOffset + videoSize.height * 0.1)
-
-            // 实现无缝循环：如果文字滚出底部，在顶部重复绘制
-            if y > videoSize.height + lineHeight {
+            // 实现无缝循环：如果文字滚出顶部，在底部重复绘制
+            if y < -lineInfo.height - lineSpacing {
+                y += totalContentHeight
+            }
+            // 如果文字滚出底部，在顶部重复绘制
+            if y > videoSize.height + lineInfo.height {
                 y -= totalContentHeight
             }
 
             // 跳过屏幕外的文本
-            guard y > -lineHeight && y < videoSize.height + lineHeight else { continue }
+            guard y > -lineInfo.height - lineSpacing && y < videoSize.height + lineInfo.height else { continue }
 
             // 计算距离高亮区域的距离，实现逐行高亮效果
             let distanceFromHighlight = abs(y - highlightY)
-            let isHighlighted = distanceFromHighlight < lineHeight * 0.6
+            let isHighlighted = distanceFromHighlight < lineInfo.height * 0.6
 
             // 高亮行使用用户配置的颜色，其他行使用半透明的颜色
             let color: UIColor
@@ -876,39 +1015,36 @@ class TeleprompterVideoRenderer {
                 color = UIColor(settings.textColor).withAlphaComponent(0.4)
             }
 
-            // 使用 CoreText 直接在 CGContext 中绘制文字（正确方向）
-            let font = CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
             let attributes: [NSAttributedString.Key: Any] = [
                 .font: font,
                 .foregroundColor: color.cgColor
             ]
 
-            let attributedString = NSAttributedString(string: line, attributes: attributes)
-            let line = CTLineCreateWithAttributedString(attributedString)
+            let attributedString = NSAttributedString(string: lineInfo.text, attributes: attributes)
+            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
 
-            // 计算文字宽度以居中显示
-            let lineWidth = CTLineGetTypographicBounds(line, nil, nil, nil)
-            let padding: CGFloat = 40
-            let x: CGFloat
-            if lineWidth > Double(videoSize.width - padding * 2) {
-                x = padding
-            } else {
-                x = (videoSize.width - CGFloat(lineWidth)) / 2
-            }
+            // 创建绘制路径（矩形区域）
+            let drawRect = CGRect(
+                x: padding,
+                y: y,
+                width: maxWidth,
+                height: lineInfo.height
+            )
 
-            // 设置文字绘制位置（y 坐标需要从底部算起）
-            context.textPosition = CGPoint(x: x, y: y)
+            let path = CGPath(rect: drawRect, transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: attributedString.length), path, nil)
 
-            // 绘制文字
-            CTLineDraw(line, context)
-            drawnCount += 1
+            // 绘制文本
+            CTFrameDraw(frame, context)
         }
 
         // 只在第一帧时打印调试信息
         if offset < 1.0 {
-            print("第一帧绘制: 字号=\(fontSize), 行高=\(lineHeight), 总内容高度=\(totalContentHeight)")
-            print("绘制了 \(drawnCount) 行文字，总行数: \(lines.filter { !$0.isEmpty }.count)")
-            print("文字颜色: \(settings.textColor)")
+            print("第一帧绘制: 字号=\(fontSize), 总内容高度=\(totalContentHeight)")
+            print("绘制了 \(lineInfos.count) 行文字")
+            for (index, info) in lineInfos.prefix(5).enumerated() {
+                print("行\(index): 高度=\(info.height), Y位置=\(info.yPosition)")
+            }
         }
 
         context.restoreGState()
