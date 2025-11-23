@@ -37,10 +37,12 @@ struct TeleprompterSettingsView: View {
         NavigationStack {
             ZStack {
                 // 隐藏的播放器视图 - 用于画中画
+                // 注意：playerLayer 需要有合理的尺寸才能启动画中画
                 if pipController.playerLayer != nil {
                     PlayerLayerView(playerLayer: pipController.playerLayer!)
-                        .frame(width: 1, height: 1)
-                        .opacity(0.01)
+                        .frame(width: 100, height: 100)
+                        .opacity(0.001)
+                        .allowsHitTesting(false)
                 }
 
                 VStack(spacing: 0) {
@@ -340,11 +342,20 @@ struct PlayerLayerView: UIViewRepresentable {
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.layer.addSublayer(playerLayer)
+        print("📐 PlayerLayerView makeUIView - playerLayer.frame: \(playerLayer.frame)")
         return view
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
-        playerLayer.frame = uiView.bounds
+        // 确保 playerLayer 的 frame 不是零
+        // 注意：不要使用 uiView.bounds，因为它可能是 (0,0,0,0)
+        print("📐 PlayerLayerView updateUIView - 当前 playerLayer.frame: \(playerLayer.frame), uiView.bounds: \(uiView.bounds)")
+
+        // 如果 frame 是零，设置一个合理的尺寸
+        if playerLayer.frame.size.width == 0 || playerLayer.frame.size.height == 0 {
+            playerLayer.frame = CGRect(x: 0, y: 0, width: 1920, height: 960)
+            print("📐 已重置 playerLayer.frame 为: \(playerLayer.frame)")
+        }
     }
 }
 
@@ -387,11 +398,13 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 使用 playback 类别，支持后台播放
+            // 使用 playback 类别以支持画中画，同时设置 mixWithOthers 选项
+            // mixWithOthers: 允许与其他音频同时播放，不会被其他 App 打断
             try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try audioSession.setActive(true)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ 音频会话配置成功：playback 模式 + mixWithOthers，支持画中画且允许与其他 App 混合")
         } catch {
-            print("Failed to setup audio session: \(error)")
+            print("❌ 音频会话配置失败: \(error)")
         }
     }
 
@@ -449,6 +462,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 let playerItem = AVPlayerItem(url: videoURL)
                 let player = AVPlayer(playerItem: playerItem)
 
+                // 静音播放，避免与其他 App 的音频冲突
+                player.isMuted = true
+                player.volume = 0.0
+
                 // 不设置循环播放，播放完就停止
                 // 监听播放结束通知
                 NotificationCenter.default.addObserver(
@@ -462,10 +479,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
                 self.player = player
 
-                // 先播放一下，确保视频准备好
-                player.play()
-                player.pause()
-
                 // 创建播放器层
                 let layer = AVPlayerLayer(player: player)
                 layer.videoGravity = .resizeAspect
@@ -475,10 +488,16 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 // 先设置 playerLayer，触发视图更新
                 self.playerLayer = layer
 
-                // 等待视图更新完成
-                DispatchQueue.main.async {
-                    // 再等一个 RunLoop，确保 playerLayer 被添加到视图
-                    DispatchQueue.main.async {
+                // 先播放一小段确保视频准备好
+                player.play()
+
+                // 等待视图更新和视频加载
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    // 暂停播放
+                    player.pause()
+
+                    // 再等待 playerLayer 完全准备好
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         self.setupPiPController(with: layer, player: player)
                     }
                 }
@@ -489,21 +508,20 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func setupPiPController(with layer: AVPlayerLayer, player: AVPlayer) {
         // 创建 PiP 控制器（必须在 playerLayer 被添加到视图层级后创建）
         if let pipController = AVPictureInPictureController(playerLayer: layer) {
-            print("画中画控制器创建成功")
+            print("✅ 画中画控制器创建成功")
             pipController.delegate = self
             pipController.canStartPictureInPictureAutomaticallyFromInline = true
             self.pipController = pipController
 
-            print("是否支持画中画: \(AVPictureInPictureController.isPictureInPictureSupported())")
+            print("✅ 是否支持画中画: \(AVPictureInPictureController.isPictureInPictureSupported())")
 
-            // 等待 playerLayer 完全渲染
-            // 延迟 0.5 秒给足够的时间让 playerLayer 准备好
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            // 等待 playerLayer 被添加到视图层级
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.attemptStartPiP()
             }
         } else {
             self.errorMessage = "无法创建画中画控制器"
-            print("无法创建画中画控制器")
+            print("❌ 无法创建画中画控制器")
         }
     }
 
@@ -529,86 +547,62 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 }
             } else {
                 errorMessage = "播放器加载超时"
+                print("❌ 播放器加载超时")
             }
             return
         }
 
         print("\n=== 尝试启动画中画 (第 \(retryCount + 1) 次) ===")
-        print("画中画是否可用: \(pipController.isPictureInPicturePossible)")
-        print("播放器是否在播放: \(player.rate > 0)")
-        print("播放器时间: \(player.currentTime().seconds)")
-        print("播放器状态: \(player.currentItem?.status.rawValue ?? -1)")
+        print("📊 画中画是否可用: \(pipController.isPictureInPicturePossible)")
+        print("📊 播放器状态: \(player.currentItem?.status.rawValue ?? -1) (1=readyToPlay)")
+        print("📊 PlayerLayer frame: \(pipController.playerLayer.frame)")
 
-        // 检查应用是否在前台活跃状态
+        // 检查应用场景状态
         let scenes = UIApplication.shared.connectedScenes
-        print("当前连接的场景数: \(scenes.count)")
-
-        // 打印所有场景的状态以便调试
-        var allSceneStates: [String] = []
-        for (index, scene) in scenes.enumerated() {
-            if let windowScene = scene as? UIWindowScene {
-                let state = windowScene.activationState
-                let stateName: String
-                switch state {
-                case .foregroundActive: stateName = "foregroundActive(1)"
-                case .foregroundInactive: stateName = "foregroundInactive(0)"
-                case .background: stateName = "background(2)"
-                case .unattached: stateName = "unattached(-1)"
-                @unknown default: stateName = "unknown(\(state.rawValue))"
-                }
-                allSceneStates.append("Scene\(index)=\(stateName)")
-                print("Scene \(index): 状态 = \(stateName)")
-            }
-        }
-
-        // 直接使用第一个场景（简化逻辑）
         guard let windowScene = scenes.first as? UIWindowScene else {
             print("❌ 未找到任何 WindowScene")
             errorMessage = "应用窗口未就绪"
             return
         }
 
-        // 检查场景状态（仅用于日志）
         let state = windowScene.activationState
-        print("使用第一个场景，状态: \(state == .foregroundActive ? "foregroundActive" : state == .foregroundInactive ? "foregroundInactive" : "其他")")
+        print("📊 场景状态: \(state == .foregroundActive ? "✅ foregroundActive" : "❌ \(state.rawValue)")")
 
         // 如果不是 foregroundActive，重试
         if state != .foregroundActive {
-            print("❌ 场景不是 foregroundActive，需要重试")
-
             if retryCount < 5 {
-                print("⏳ 将在 0.5 秒后进行第 \(retryCount + 2) 次尝试")
+                print("⏳ 场景未激活，将在 0.5 秒后重试")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     self.attemptStartPiP(retryCount: retryCount + 1)
                 }
             } else {
-                print("❌ 已重试 5 次，应用始终不在前台活跃状态")
-                errorMessage = "应用未在前台活跃状态，请重试"
+                print("❌ 场景始终未激活")
+                errorMessage = "应用未在前台活跃状态"
             }
             return
         }
 
-        print("✅ 场景是 foregroundActive，准备启动画中画")
-
         // 确保画中画可用
         if !pipController.isPictureInPicturePossible {
-            print("❌ 画中画功能暂时不可用")
+            print("❌ isPictureInPicturePossible = false")
 
-            // 如果画中画暂时不可用，也尝试重试
             if retryCount < 5 {
-                print("⏳ 将在 0.5 秒后进行第 \(retryCount + 2) 次尝试")
+                print("⏳ 将在 0.5 秒后重试 (可能 playerLayer 还未完全加载)")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     self.attemptStartPiP(retryCount: retryCount + 1)
                 }
             } else {
-                print("❌ 已重试 5 次，画中画仍不可用")
-                errorMessage = "画中画暂时不可用，请稍后重试"
+                print("❌ 画中画仍不可用，可能原因：")
+                print("   1. playerLayer 未正确添加到视图层级")
+                print("   2. playerLayer 的 frame 太小")
+                print("   3. 设备不支持画中画（但 isPictureInPictureSupported=true）")
+                errorMessage = "画中画启动失败，请重新尝试"
             }
-            return  // 重要：立即返回，不继续执行
+            return
         }
 
         // 所有条件都满足，启动画中画
-        print("✅ 所有条件满足，启动画中画")
+        print("✅ 所有条件满足，启动画中画！")
         pipController.startPictureInPicture()
         print("✅ 已调用 startPictureInPicture()")
     }
