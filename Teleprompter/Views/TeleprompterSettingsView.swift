@@ -9,16 +9,23 @@ struct TeleprompterSettingsView: View {
     @Bindable var script: Script
 
     @State private var settings = TeleprompterSettings()
-    @State private var showingTeleprompter = false
-    @State private var showingPiPTeleprompter = false
+    @StateObject private var pipController = PiPTeleprompterController()
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // 预览区域 - 固定在顶部
-                PreviewCard(content: script.content, settings: settings)
-                    .frame(height: 280)
-                    .frame(maxWidth: .infinity)
+            ZStack {
+                // 隐藏的播放器视图 - 用于画中画
+                if pipController.playerLayer != nil {
+                    PlayerLayerView(playerLayer: pipController.playerLayer!)
+                        .frame(width: 1, height: 1)
+                        .opacity(0.01)
+                }
+
+                VStack(spacing: 0) {
+                    // 预览区域 - 固定在顶部
+                    PreviewCard(content: script.content, settings: settings)
+                        .frame(height: 280)
+                        .frame(maxWidth: .infinity)
 
                 // 可滚动的设置区域
                 ScrollView {
@@ -94,62 +101,95 @@ struct TeleprompterSettingsView: View {
                 .background(Color.black)
 
                 // 底部按钮
-                VStack(spacing: 12) {
-                    // 画中画悬浮窗按钮（推荐）
-                    Button(action: {
-                        showingPiPTeleprompter = true
-                    }) {
-                        HStack {
-                            Image(systemName: "pip.enter")
-                                .font(.system(size: 18))
-                            VStack(alignment: .leading, spacing: 2) {
-                                HStack {
-                                    Text("开启画中画悬浮")
-                                        .font(.system(size: 18, weight: .medium))
-                                    Text("推荐")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundColor(.yellow)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(Color.yellow.opacity(0.2))
-                                        .cornerRadius(4)
-                                }
-                                Text("可切换到其他 App")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.white.opacity(0.7))
-                            }
-                            Spacer()
+                VStack(spacing: 16) {
+                    // 状态显示
+                    if pipController.isGeneratingVideo {
+                        VStack(spacing: 12) {
+                            ProgressView()
+                                .scaleEffect(1.2)
+                                .tint(Color(red: 1.0, green: 0.3, blue: 0.4))
+
+                            Text("正在生成画中画视频...")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.7))
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 14)
-                        .background(Color(red: 1.0, green: 0.3, blue: 0.4))
-                        .cornerRadius(25)
+                        .padding(.vertical, 20)
+                    } else if pipController.isActive {
+                        VStack(spacing: 12) {
+                            HStack {
+                                Circle()
+                                    .fill(Color.green)
+                                    .frame(width: 10, height: 10)
+                                Text("画中画已启动")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.green)
+                            }
+
+                            Text("现在可以切换到相机 App 录制视频")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.6))
+                        }
+                        .padding(.vertical, 20)
+                    } else if let errorMessage = pipController.errorMessage {
+                        VStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.system(size: 24))
+                                .foregroundColor(.orange)
+                            Text(errorMessage)
+                                .font(.system(size: 12))
+                                .foregroundColor(.orange)
+                                .multilineTextAlignment(.center)
+                        }
+                        .padding(.vertical, 20)
                     }
 
-                    // 普通悬浮窗按钮
-                    Button(action: {
-                        showingTeleprompter = true
-                    }) {
-                        HStack {
-                            Image(systemName: "rectangle.inset.filled")
-                                .font(.system(size: 18))
-                            Text("App 内悬浮窗")
-                                .font(.system(size: 16))
-                            Spacer()
+                    // 主按钮
+                    if pipController.isActive {
+                        Button(action: {
+                            pipController.stopPiP()
+                        }) {
+                            HStack {
+                                Image(systemName: "pip.exit")
+                                    .font(.system(size: 20))
+                                Text("停止悬浮提词")
+                                    .font(.system(size: 18, weight: .medium))
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                            .background(Color.red.opacity(0.8))
+                            .cornerRadius(28)
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.horizontal, 20)
-                        .padding(.vertical, 14)
-                        .background(Color(white: 0.3))
-                        .cornerRadius(25)
+                    } else {
+                        Button(action: {
+                            pipController.startPiP(script: script, settings: settings)
+                        }) {
+                            HStack {
+                                if pipController.isGeneratingVideo {
+                                    ProgressView()
+                                        .tint(.white)
+                                    Text("生成中...")
+                                        .font(.system(size: 18, weight: .medium))
+                                } else {
+                                    Image(systemName: "pip.enter")
+                                        .font(.system(size: 20))
+                                    Text("开启悬浮提词")
+                                        .font(.system(size: 18, weight: .medium))
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                            .background(Color(red: 1.0, green: 0.3, blue: 0.4))
+                            .cornerRadius(28)
+                        }
+                        .disabled(!pipController.isPiPSupported || pipController.isGeneratingVideo)
                     }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 30)
                 .background(Color.black)
+                }
             }
             .background(Color.black)
             .navigationTitle("悬浮提词预览")
@@ -166,13 +206,10 @@ struct TeleprompterSettingsView: View {
                 }
             }
         }
-        .fullScreenCover(isPresented: $showingTeleprompter) {
-            FloatingTeleprompterView(script: script, settings: settings)
-        }
-        .fullScreenCover(isPresented: $showingPiPTeleprompter) {
-            PiPTeleprompterView(script: script, settings: settings)
-        }
         .preferredColorScheme(.dark)
+        .onDisappear {
+            // 页面关闭时不停止 PiP，让它继续运行
+        }
     }
 }
 
@@ -301,170 +338,18 @@ struct ColorButton: View {
     TeleprompterSettingsView(script: Script(content: "示例台词内容\n第二行\n第三行"))
 }
 
-// MARK: - PiP Teleprompter View
-struct PiPTeleprompterView: View {
-    @Environment(\.dismiss) private var dismiss
+// MARK: - Player Layer View
+struct PlayerLayerView: UIViewRepresentable {
+    let playerLayer: AVPlayerLayer
 
-    @Bindable var script: Script
-    let settings: TeleprompterSettings
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.layer.addSublayer(playerLayer)
+        return view
+    }
 
-    @StateObject private var pipController = PiPTeleprompterController()
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(spacing: 30) {
-                Spacer()
-
-                // 图标
-                Image(systemName: "pip")
-                    .font(.system(size: 80))
-                    .foregroundColor(.white)
-
-                Text("画中画提词器")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundColor(.white)
-
-                Text("开启后可以切换到其他 App\n提词窗口会一直悬浮显示")
-                    .font(.system(size: 16))
-                    .foregroundColor(.gray)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 40)
-
-                Spacer()
-
-                // 状态显示
-                if pipController.isGeneratingVideo {
-                    VStack(spacing: 16) {
-                        ProgressView()
-                            .scaleEffect(1.5)
-                            .tint(.white)
-
-                        Text("正在生成视频...")
-                            .font(.system(size: 16))
-                            .foregroundColor(.white)
-
-                        Text("首次生成需要几秒钟，请耐心等待")
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                    }
-                    .padding(.vertical, 30)
-                } else if pipController.isActive {
-                    VStack(spacing: 16) {
-                        HStack {
-                            Circle()
-                                .fill(Color.green)
-                                .frame(width: 12, height: 12)
-                            Text("悬浮窗已开启")
-                                .font(.system(size: 16))
-                                .foregroundColor(.green)
-                        }
-
-                        Text("现在可以切换到相机 App 了")
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-
-                        Text("提词内容：")
-                            .font(.system(size: 14))
-                            .foregroundColor(.gray)
-                            .padding(.top, 10)
-
-                        ScrollView {
-                            Text(script.content)
-                                .font(.system(size: 14))
-                                .foregroundColor(.white)
-                                .padding()
-                        }
-                        .frame(height: 150)
-                        .background(Color(white: 0.15))
-                        .cornerRadius(12)
-                        .padding(.horizontal, 30)
-                    }
-                } else if !pipController.isPiPSupported {
-                    VStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(.system(size: 50))
-                            .foregroundColor(.orange)
-                        Text("此设备不支持画中画功能")
-                            .font(.system(size: 16))
-                            .foregroundColor(.orange)
-                    }
-                } else if let errorMessage = pipController.errorMessage {
-                    VStack(spacing: 12) {
-                        Image(systemName: "xmark.circle")
-                            .font(.system(size: 50))
-                            .foregroundColor(.red)
-                        Text(errorMessage)
-                            .font(.system(size: 16))
-                            .foregroundColor(.red)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 30)
-                    }
-                }
-
-                Spacer()
-
-                // 按钮区域
-                VStack(spacing: 16) {
-                    if pipController.isActive {
-                        Button(action: {
-                            pipController.stopPiP()
-                        }) {
-                            HStack {
-                                Image(systemName: "pip.exit")
-                                    .font(.system(size: 20))
-                                Text("停止悬浮")
-                                    .font(.system(size: 18, weight: .medium))
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 56)
-                            .background(Color.red.opacity(0.8))
-                            .cornerRadius(28)
-                        }
-                    } else {
-                        Button(action: {
-                            pipController.startPiP(script: script, settings: settings)
-                        }) {
-                            HStack {
-                                if pipController.isGeneratingVideo {
-                                    ProgressView()
-                                        .tint(.white)
-                                    Text("生成中...")
-                                        .font(.system(size: 18, weight: .medium))
-                                } else {
-                                    Image(systemName: "pip.enter")
-                                        .font(.system(size: 20))
-                                    Text("开启悬浮提词器")
-                                        .font(.system(size: 18, weight: .medium))
-                                }
-                            }
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 56)
-                            .background(Color(red: 1.0, green: 0.3, blue: 0.4))
-                            .cornerRadius(28)
-                        }
-                        .disabled(!pipController.isPiPSupported || pipController.isGeneratingVideo)
-                    }
-
-                    Button(action: {
-                        pipController.stopPiP()
-                        dismiss()
-                    }) {
-                        Text("关闭")
-                            .font(.system(size: 16))
-                            .foregroundColor(.gray)
-                    }
-                }
-                .padding(.horizontal, 30)
-                .padding(.bottom, 40)
-            }
-        }
-        .onDisappear {
-            // 不要在这里停止 PiP，让它继续运行
-        }
+    func updateUIView(_ uiView: UIView, context: Context) {
+        playerLayer.frame = uiView.bounds
     }
 }
 
@@ -474,15 +359,28 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     @Published var isPiPSupported = AVPictureInPictureController.isPictureInPictureSupported()
     @Published var isGeneratingVideo = false
     @Published var errorMessage: String?
+    @Published var playerLayer: AVPlayerLayer?
 
     private var pipController: AVPictureInPictureController?
-    private var playerLayer: AVPlayerLayer?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
+    private var sceneObserver: NSObjectProtocol?
 
     override init() {
         super.init()
         setupAudioSession()
+        setupSceneObserver()
+    }
+
+    private func setupSceneObserver() {
+        // 监听应用进入前台/后台事件
+        sceneObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            print("Scene 已激活 (前台活跃状态)")
+        }
     }
 
     private func setupAudioSession() {
@@ -543,21 +441,28 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 // 创建播放器层
                 let layer = AVPlayerLayer(player: player)
                 layer.videoGravity = .resizeAspect
+                // 横屏长条形尺寸
+                layer.frame = CGRect(x: 0, y: 0, width: 1920, height: 960)
                 self.playerLayer = layer
 
-                // 创建 PiP 控制器
+                // 创建 PiP 控制器（必须在 playerLayer 创建后立即创建）
                 if let pipController = AVPictureInPictureController(playerLayer: layer) {
+                    print("画中画控制器创建成功")
                     pipController.delegate = self
                     pipController.canStartPictureInPictureAutomaticallyFromInline = true
                     self.pipController = pipController
 
+                    print("是否支持画中画: \(AVPictureInPictureController.isPictureInPictureSupported())")
+
                     // 启动播放
                     player.play()
 
-                    // 延迟启动 PiP
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        print("尝试启动画中画...")
-                        pipController.startPictureInPicture()
+                    // 等待下一个 RunLoop 周期，确保 playerLayer 已被添加到视图层级
+                    DispatchQueue.main.async {
+                        // 再等待 playerLayer 完全渲染
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            self.attemptStartPiP()
+                        }
                     }
                 } else {
                     self.errorMessage = "无法创建画中画控制器"
@@ -565,6 +470,37 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 }
             }
         }
+    }
+
+    private func attemptStartPiP() {
+        guard let pipController = pipController else {
+            errorMessage = "画中画控制器未初始化"
+            return
+        }
+
+        print("尝试启动画中画...")
+        print("画中画是否可用: \(pipController.isPictureInPicturePossible)")
+        print("播放器是否在播放: \(player?.rate ?? 0 > 0)")
+        print("播放器时间: \(player?.currentTime().seconds ?? 0)")
+
+        // 检查应用是否在前台活跃状态
+        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              windowScene.activationState == .foregroundActive else {
+            errorMessage = "请确保应用在前台再启动画中画"
+            print("应用不在前台活跃状态")
+            return
+        }
+
+        // 确保画中画可用
+        guard pipController.isPictureInPicturePossible else {
+            errorMessage = "画中画暂时不可用，请稍后重试"
+            print("画中画不可用")
+            return
+        }
+
+        // 启动画中画
+        pipController.startPictureInPicture()
+        print("已调用 startPictureInPicture()")
     }
 
     func stopPiP() {
@@ -575,6 +511,9 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     deinit {
+        if let observer = sceneObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         stopPiP()
     }
 }
@@ -600,9 +539,16 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, failedToStartPictureInPictureWithError error: Error) {
-        print("PiP failed to start: \(error)")
+        print("❌ PiP failed to start: \(error)")
+        print("错误详情: \(error.localizedDescription)")
+        if let nsError = error as NSError? {
+            print("错误域: \(nsError.domain)")
+            print("错误代码: \(nsError.code)")
+            print("错误信息: \(nsError.userInfo)")
+        }
         DispatchQueue.main.async {
             self.isActive = false
+            self.errorMessage = "画中画启动失败: \(error.localizedDescription)"
         }
     }
 
@@ -617,7 +563,9 @@ class TeleprompterVideoRenderer {
     private let script: Script
     private let settings: TeleprompterSettings
 
-    private let videoSize = CGSize(width: 720, height: 1280)
+    // 画中画尺寸：横屏长条形（宽度填满，高度约为屏幕的1/2）
+    // 使用 1920x960 (2:1宽高比)
+    private let videoSize = CGSize(width: 1920, height: 960)
     private let fps: Double = 30
 
     init(script: Script, settings: TeleprompterSettings) {
@@ -637,6 +585,10 @@ class TeleprompterVideoRenderer {
         let totalFrames = Int(duration * fps)
 
         print("开始创建视频，共 \(totalFrames) 帧")
+        print("视频尺寸: \(videoSize)")
+        print("脚本内容行数: \(script.content.components(separatedBy: .newlines).count)")
+        print("字号: \(settings.fontSize)")
+        print("文字颜色: \(settings.textColor)")
 
         do {
             // 创建 AssetWriter
@@ -682,7 +634,9 @@ class TeleprompterVideoRenderer {
             var frameCount = 0
             var currentOffset: CGFloat = 0
 
-            let lineHeight = settings.fontSize + 12
+            // 使用缩放后的字号计算滚动速度
+            let scaledFontSize = settings.fontSize * 0.75
+            let lineHeight = scaledFontSize + 8
             let pointsPerSecond = lineHeight / CGFloat(settings.scrollSpeed)
             let speed = pointsPerSecond / CGFloat(fps)
 
@@ -782,13 +736,19 @@ class TeleprompterVideoRenderer {
 
     private func drawText(in context: CGContext, offset: CGFloat) {
         let lines = script.content.components(separatedBy: .newlines)
-        let lineHeight = settings.fontSize + 12
 
+        // 横屏长条形，高度 960
+        // 相比标准竖屏提词器，高度从1280缩小到960，约为75%
+        let scaledFontSize = settings.fontSize * 0.75
+        let lineHeight = scaledFontSize + 8
+
+        // 翻转坐标系以正确绘制文本
         context.saveGState()
         context.translateBy(x: 0, y: videoSize.height)
         context.scaleBy(x: 1, y: -1)
 
         let highlightY = videoSize.height * 0.4
+        var drawnCount = 0
 
         for (index, line) in lines.enumerated() {
             guard !line.isEmpty else { continue }
@@ -803,17 +763,38 @@ class TeleprompterVideoRenderer {
             let isHighlighted = distance < lineHeight * 1.5
             let color = isHighlighted ? UIColor(settings.textColor) : UIColor.gray.withAlphaComponent(0.7)
 
-            // 绘制文本
+            // 绘制文本 - 使用 UIGraphicsPushContext 确保在正确的上下文中绘制
+            UIGraphicsPushContext(context)
+
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: settings.fontSize),
+                .font: UIFont.systemFont(ofSize: scaledFontSize),
                 .foregroundColor: color
             ]
 
             let attributedString = NSAttributedString(string: line, attributes: attributes)
             let textSize = attributedString.size()
-            let x = (videoSize.width - textSize.width) / 2
 
-            attributedString.draw(at: CGPoint(x: x, y: videoSize.height - y - lineHeight))
+            // 居中绘制，如果文字过长则左对齐并添加边距
+            let padding: CGFloat = 10
+            let x: CGFloat
+            if textSize.width > videoSize.width - padding * 2 {
+                x = padding
+            } else {
+                x = (videoSize.width - textSize.width) / 2
+            }
+
+            // 在翻转的坐标系中绘制
+            let drawRect = CGRect(x: x, y: videoSize.height - y - lineHeight,
+                                 width: videoSize.width - padding * 2, height: lineHeight)
+            attributedString.draw(in: drawRect)
+            drawnCount += 1
+
+            UIGraphicsPopContext()
+        }
+
+        // 只在第一帧时打印调试信息
+        if offset < 1.0 {
+            print("第一帧绘制了 \(drawnCount) 行文字，总行数: \(lines.filter { !$0.isEmpty }.count)")
         }
 
         context.restoreGState()
