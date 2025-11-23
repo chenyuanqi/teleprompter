@@ -233,12 +233,12 @@ struct PreviewCard: View {
                     ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
                         if !line.isEmpty {
                             Text(line)
-                                .font(.system(size: settings.fontSize * 0.5))
-                                .foregroundColor(index == 0 ? settings.textColor : .gray)
+                                .font(.system(size: settings.fontSize))
+                                .foregroundColor(settings.textColor)
                         } else {
                             // 保留空行
                             Text(" ")
-                                .font(.system(size: settings.fontSize * 0.5))
+                                .font(.system(size: settings.fontSize))
                         }
                     }
                 }
@@ -378,8 +378,12 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             forName: UIScene.didActivateNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
-            print("Scene 已激活 (前台活跃状态)")
+        ) { [weak self] notification in
+            if let scene = notification.object as? UIWindowScene {
+                print("📱 Scene 已激活，状态: \(scene.activationState.rawValue)")
+            } else {
+                print("📱 Scene 已激活 (前台活跃状态)")
+            }
         }
     }
 
@@ -459,8 +463,9 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
                     // 等待下一个 RunLoop 周期，确保 playerLayer 已被添加到视图层级
                     DispatchQueue.main.async {
-                        // 再等待 playerLayer 完全渲染
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        // 等待 playerLayer 完全渲染，同时确保 Scene 处于活跃状态
+                        // 增加延迟以避免 Scene 状态问题（从 foregroundInactive 变为 foregroundActive）
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                             self.attemptStartPiP()
                         }
                     }
@@ -472,42 +477,121 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         }
     }
 
-    private func attemptStartPiP() {
+    private func attemptStartPiP(retryCount: Int = 0) {
         guard let pipController = pipController else {
+            print("❌ 画中画控制器未初始化")
             errorMessage = "画中画控制器未初始化"
             return
         }
 
-        print("尝试启动画中画...")
+        print("\n=== 尝试启动画中画 (第 \(retryCount + 1) 次) ===")
         print("画中画是否可用: \(pipController.isPictureInPicturePossible)")
         print("播放器是否在播放: \(player?.rate ?? 0 > 0)")
         print("播放器时间: \(player?.currentTime().seconds ?? 0)")
 
         // 检查应用是否在前台活跃状态
-        guard let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              windowScene.activationState == .foregroundActive else {
-            errorMessage = "请确保应用在前台再启动画中画"
-            print("应用不在前台活跃状态")
+        let scenes = UIApplication.shared.connectedScenes
+        print("当前连接的场景数: \(scenes.count)")
+
+        // 打印所有场景的状态以便调试
+        for (index, scene) in scenes.enumerated() {
+            if let windowScene = scene as? UIWindowScene {
+                print("Scene \(index): 激活状态 = \(windowScene.activationState.rawValue)")
+            }
+        }
+
+        // 查找 foregroundActive 的场景
+        // 注意：ActivationState 的值是 unattached=-1, foregroundInactive=0, foregroundActive=1, background=2
+        var foundActiveScene: UIWindowScene?
+        for scene in scenes {
+            if let windowScene = scene as? UIWindowScene {
+                if windowScene.activationState == .foregroundActive {
+                    print("✅ 找到 foregroundActive 的场景: rawValue=\(windowScene.activationState.rawValue)")
+                    foundActiveScene = windowScene
+                    break
+                }
+            }
+        }
+
+        // 如果找不到活跃场景，使用第一个场景
+        guard let windowScene = foundActiveScene ?? scenes.first as? UIWindowScene else {
+            print("❌ 未找到 WindowScene")
+            errorMessage = "应用窗口未就绪"
             return
+        }
+
+        let activationState = windowScene.activationState
+        let stateDescription: String
+        switch activationState {
+        case .foregroundActive:
+            stateDescription = "foregroundActive"
+        case .foregroundInactive:
+            stateDescription = "foregroundInactive"
+        case .background:
+            stateDescription = "background"
+        case .unattached:
+            stateDescription = "unattached"
+        @unknown default:
+            stateDescription = "unknown(\(activationState.rawValue))"
+        }
+        print("使用的 Scene 激活状态: \(activationState.rawValue) (\(stateDescription))")
+        print("是否找到活跃场景: \(foundActiveScene != nil)")
+
+        // 必须是 foregroundActive 才能启动画中画
+        if activationState != .foregroundActive {
+            print("❌ Scene 状态不是 foregroundActive，需要重试")
+
+            // 重试最多 5 次，每次延迟 0.5 秒
+            if retryCount < 5 {
+                print("⏳ 将在 0.5 秒后进行第 \(retryCount + 2) 次尝试")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.attemptStartPiP(retryCount: retryCount + 1)
+                }
+            } else {
+                print("❌ 已重试 5 次，仍未成功")
+                errorMessage = "应用未在前台活跃状态，请重试"
+            }
+            return  // 重要：立即返回，不继续执行
         }
 
         // 确保画中画可用
-        guard pipController.isPictureInPicturePossible else {
-            errorMessage = "画中画暂时不可用，请稍后重试"
-            print("画中画不可用")
-            return
+        if !pipController.isPictureInPicturePossible {
+            print("❌ 画中画功能暂时不可用")
+
+            // 如果画中画暂时不可用，也尝试重试
+            if retryCount < 5 {
+                print("⏳ 将在 0.5 秒后进行第 \(retryCount + 2) 次尝试")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.attemptStartPiP(retryCount: retryCount + 1)
+                }
+            } else {
+                print("❌ 已重试 5 次，画中画仍不可用")
+                errorMessage = "画中画暂时不可用，请稍后重试"
+            }
+            return  // 重要：立即返回，不继续执行
         }
 
-        // 启动画中画
+        // 所有条件都满足，启动画中画
+        print("✅ 所有条件满足，启动画中画")
         pipController.startPictureInPicture()
-        print("已调用 startPictureInPicture()")
+        print("✅ 已调用 startPictureInPicture()")
     }
 
     func stopPiP() {
+        print("停止画中画...")
         pipController?.stopPictureInPicture()
         player?.pause()
         videoRenderer?.stop()
+
+        // 清理资源，为下次启动做准备
+        pipController = nil
+        player = nil
+        playerLayer = nil
+        videoRenderer = nil
+
         isActive = false
+        errorMessage = nil
+        print("画中画已停止并清理资源")
     }
 
     deinit {
@@ -634,11 +718,14 @@ class TeleprompterVideoRenderer {
             var frameCount = 0
             var currentOffset: CGFloat = 0
 
-            // 使用缩放后的字号计算滚动速度
-            let scaledFontSize = settings.fontSize * 0.75
-            let lineHeight = scaledFontSize + 8
+            // 使用放大后的字号和滚动速度（与 drawText 保持一致）
+            let fontSize = settings.fontSize * 3.5
+            let lineHeight = fontSize + 20
+            // scrollSpeed 是每行滚动的秒数，所以每秒移动 lineHeight/scrollSpeed 像素
             let pointsPerSecond = lineHeight / CGFloat(settings.scrollSpeed)
             let speed = pointsPerSecond / CGFloat(fps)
+
+            print("滚动配置: 原始字号=\(settings.fontSize), 放大后字号=\(fontSize), 行高=\(lineHeight), 滚动速度=\(settings.scrollSpeed)秒/行, 每帧移动=\(speed)像素")
 
             print("开始写入视频帧...")
 
@@ -737,64 +824,85 @@ class TeleprompterVideoRenderer {
     private func drawText(in context: CGContext, offset: CGFloat) {
         let lines = script.content.components(separatedBy: .newlines)
 
-        // 横屏长条形，高度 960
-        // 相比标准竖屏提词器，高度从1280缩小到960，约为75%
-        let scaledFontSize = settings.fontSize * 0.75
-        let lineHeight = scaledFontSize + 8
+        // 横屏画中画，大幅放大字号以确保在画中画窗口中清晰可读
+        // 视频分辨率 1920x960 很大，放大 3.5 倍字号
+        let fontSize = settings.fontSize * 3.5
+        let lineHeight = fontSize + 20
 
-        // 翻转坐标系以正确绘制文本
+        // 不需要翻转坐标系，直接在 CGContext 中绘制
         context.saveGState()
-        context.translateBy(x: 0, y: videoSize.height)
-        context.scaleBy(x: 1, y: -1)
 
+        // 计算总内容高度以实现循环滚动
+        let totalContentHeight = CGFloat(lines.filter { !$0.isEmpty }.count) * lineHeight
+        // 使用模运算实现无缝循环
+        let loopedOffset = offset.truncatingRemainder(dividingBy: totalContentHeight)
+
+        // 高亮区域：屏幕中央偏上位置（从顶部算起 40%）
         let highlightY = videoSize.height * 0.4
+
         var drawnCount = 0
 
         for (index, line) in lines.enumerated() {
             guard !line.isEmpty else { continue }
 
-            let y = CGFloat(index) * lineHeight - offset + videoSize.height * 0.3
+            // 计算文字位置（从底部向上滚动）
+            // y 坐标从屏幕底部开始，向上滚动
+            var y = videoSize.height - (CGFloat(index) * lineHeight - loopedOffset + videoSize.height * 0.1)
+
+            // 实现无缝循环：如果文字滚出底部，在顶部重复绘制
+            if y > videoSize.height + lineHeight {
+                y -= totalContentHeight
+            }
 
             // 跳过屏幕外的文本
             guard y > -lineHeight && y < videoSize.height + lineHeight else { continue }
 
-            // 确定颜色（高亮当前行）
-            let distance = abs(y - highlightY)
-            let isHighlighted = distance < lineHeight * 1.5
-            let color = isHighlighted ? UIColor(settings.textColor) : UIColor.gray.withAlphaComponent(0.7)
+            // 计算距离高亮区域的距离，实现逐行高亮效果
+            let distanceFromHighlight = abs(y - highlightY)
+            let isHighlighted = distanceFromHighlight < lineHeight * 0.6
 
-            // 绘制文本 - 使用 UIGraphicsPushContext 确保在正确的上下文中绘制
-            UIGraphicsPushContext(context)
+            // 高亮行使用用户配置的颜色，其他行使用半透明的颜色
+            let color: UIColor
+            if isHighlighted {
+                color = UIColor(settings.textColor)
+            } else {
+                // 其他行使用降低亮度的颜色
+                color = UIColor(settings.textColor).withAlphaComponent(0.4)
+            }
 
+            // 使用 CoreText 直接在 CGContext 中绘制文字（正确方向）
+            let font = CTFontCreateWithName("Helvetica" as CFString, fontSize, nil)
             let attributes: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: scaledFontSize),
-                .foregroundColor: color
+                .font: font,
+                .foregroundColor: color.cgColor
             ]
 
             let attributedString = NSAttributedString(string: line, attributes: attributes)
-            let textSize = attributedString.size()
+            let line = CTLineCreateWithAttributedString(attributedString)
 
-            // 居中绘制，如果文字过长则左对齐并添加边距
-            let padding: CGFloat = 10
+            // 计算文字宽度以居中显示
+            let lineWidth = CTLineGetTypographicBounds(line, nil, nil, nil)
+            let padding: CGFloat = 40
             let x: CGFloat
-            if textSize.width > videoSize.width - padding * 2 {
+            if lineWidth > Double(videoSize.width - padding * 2) {
                 x = padding
             } else {
-                x = (videoSize.width - textSize.width) / 2
+                x = (videoSize.width - CGFloat(lineWidth)) / 2
             }
 
-            // 在翻转的坐标系中绘制
-            let drawRect = CGRect(x: x, y: videoSize.height - y - lineHeight,
-                                 width: videoSize.width - padding * 2, height: lineHeight)
-            attributedString.draw(in: drawRect)
-            drawnCount += 1
+            // 设置文字绘制位置（y 坐标需要从底部算起）
+            context.textPosition = CGPoint(x: x, y: y)
 
-            UIGraphicsPopContext()
+            // 绘制文字
+            CTLineDraw(line, context)
+            drawnCount += 1
         }
 
         // 只在第一帧时打印调试信息
         if offset < 1.0 {
-            print("第一帧绘制了 \(drawnCount) 行文字，总行数: \(lines.filter { !$0.isEmpty }.count)")
+            print("第一帧绘制: 字号=\(fontSize), 行高=\(lineHeight), 总内容高度=\(totalContentHeight)")
+            print("绘制了 \(drawnCount) 行文字，总行数: \(lines.filter { !$0.isEmpty }.count)")
+            print("文字颜色: \(settings.textColor)")
         }
 
         context.restoreGState()
