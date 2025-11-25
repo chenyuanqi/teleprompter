@@ -366,27 +366,18 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     @Published var isGeneratingVideo = false
     @Published var errorMessage: String?
     @Published var playerLayer: AVPlayerLayer?
-    @Published var autoRestartAttempted = false  // 标记是否已尝试自动重启
 
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
-    private var sceneObserver: NSObjectProtocol?
-    private var audioInterruptionObserver: NSObjectProtocol?
-    private var appBecomeActiveObserver: NSObjectProtocol?
-    private var appResignActiveObserver: NSObjectProtocol?
     private var countdownTimer: Timer?
     private var countdownValue: Int = 3
-    private var autoRestartRetryCount = 0  // 自动重启重试计数器
-    private let maxAutoRestartRetries = 3  // 最多重试3次
-    private var audioSessionWasPausedForInterruption = false  // 标记音频会话是否因中断而暂停
 
     override init() {
         super.init()
         setupAudioSession()
-        setupSceneObserver()
-        setupAudioInterruptionObserver()
-        setupAppLifecycleObservers()
+        // 不需要监听场景、音频中断、应用生命周期
+        // 让系统自然管理 PiP，我们不主动干预
     }
 
     private func setupSceneObserver() {
@@ -579,19 +570,16 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 画中画要求使用 .playback 类别（.ambient 不支持画中画）
-            // 但我们可以通过配置选项来最小化与相机的冲突：
-            // - mixWithOthers: 允许与其他音频混合
-            // - duckOthers: 降低其他音频音量而非停止（但相机会忽略这个）
-            // 关键：播放器已经是静音的(isMuted=true)，实际不会产生声音
+            // PiP 要求使用 .playback 类别
+            // mode 使用 .moviePlayback 是最适合视频播放的模式
+            // 关键：不要在退后台时停用音频会话，让系统管理
             try audioSession.setCategory(
                 .playback,
-                mode: .default,
-                options: [.mixWithOthers, .duckOthers]
+                mode: .moviePlayback,
+                options: []
             )
-            // 激活音频会话
-            try audioSession.setActive(true, options: [])
-            print("✅ 音频会话配置成功：playback(画中画要求) + mixWithOthers")
+            try audioSession.setActive(true)
+            print("✅ 音频会话配置成功：playback + moviePlayback 模式")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
@@ -604,9 +592,8 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             return
         }
 
-        // 清除错误信息和自动重启标记
+        // 清除错误信息
         errorMessage = nil
-        autoRestartAttempted = false
 
         // 先清理之前的资源（如果有的话）
         if pipController != nil || player != nil {
@@ -836,18 +823,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     deinit {
-        if let observer = sceneObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = audioInterruptionObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = appBecomeActiveObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = appResignActiveObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        // 清理资源
         stopPiP()
     }
 }
@@ -897,16 +873,11 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        print("🛑 PiP did stop")
-
-        // 使用 ambient 音频类别后，画中画理论上不应该因相机而停止
-        // 如果停止了，可能是用户手动关闭或其他原因
+        print("🛑 PiP did stop (用户关闭或系统停止)")
         DispatchQueue.main.async {
             self.isActive = false
-
-            // 检查是否应该自动重启
-            // 如果是因为相机等应用导致的意外停止，会在这里尝试恢复
-            self.checkAndAutoRestart()
+            // 不需要自动重启，如果用户关闭了 PiP，应该尊重用户的选择
+            // 如果是系统停止的（比如另一个 App 也启动了 PiP），用户可以手动重启
         }
     }
 
