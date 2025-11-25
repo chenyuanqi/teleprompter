@@ -379,6 +379,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var countdownValue: Int = 3
     private var autoRestartRetryCount = 0  // 自动重启重试计数器
     private let maxAutoRestartRetries = 3  // 最多重试3次
+    private var audioSessionWasPausedForInterruption = false  // 标记音频会话是否因中断而暂停
 
     override init() {
         super.init()
@@ -441,12 +442,23 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                     print("🎙️ 中断原因: \(reasonDesc)")
                 }
 
-                // 保持画中画运行，不做任何主动停止操作
-                print("💡 保持画中画运行，等待中断结束...")
+                // 关键策略：主动暂时停用音频会话，让相机等应用可以正常工作
+                // 但不停止画中画本身，画面继续显示
+                print("💡 主动暂停音频会话，但保持画中画继续运行...")
+                do {
+                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                    self.audioSessionWasPausedForInterruption = true
+                    print("✅ 音频会话已暂停，让位给相机等应用（画中画保持显示）")
+                } catch {
+                    print("⚠️ 暂停音频会话失败: \(error)")
+                }
+
+                // 画中画窗口会保持显示，但播放可能会暂停（这是正常的）
+                // 重要：不要停止画中画控制器本身
 
             case .ended:
                 // 音频会话中断结束（相机关闭、录屏停止等）
-                print("🎙️ 音频会话中断结束")
+                print("🎙️ 音频会话中断结束（相机等应用已关闭）")
 
                 // 检查是否应该恢复播放
                 var shouldResume = false
@@ -456,22 +468,33 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                     print("🎙️ 系统建议\(shouldResume ? "恢复" : "不恢复")播放")
                 }
 
-                // 立即重新激活音频会话（关键！）
-                print("🔄 立即重新激活音频会话...")
-                self.reactivateAudioSession()
+                // 只有在我们主动暂停了音频会话时才需要恢复
+                if self.audioSessionWasPausedForInterruption {
+                    // 立即重新激活音频会话（关键！）
+                    print("🔄 立即重新激活音频会话...")
+                    self.reactivateAudioSession()
+                    self.audioSessionWasPausedForInterruption = false
 
-                // 如果画中画还在运行且播放器已暂停，恢复播放
-                if self.isActive, let player = self.player {
-                    if player.rate == 0 {
-                        print("▶️ 恢复播放")
-                        player.play()
-                    }
-                } else if !self.isActive {
-                    // 如果画中画已经停止，尝试快速重启
-                    print("🔄 画中画已停止，尝试快速重启...")
+                    // 短暂延迟后检查画中画状态（给系统时间处理）
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                        self?.attemptQuickRestart()
+                        guard let self = self else { return }
+
+                        // 如果画中画还在运行且播放器已暂停，恢复播放
+                        if self.isActive, let player = self.player {
+                            if player.rate == 0 {
+                                print("▶️ 恢复播放")
+                                player.play()
+                            } else {
+                                print("✅ 画中画正在播放，无需恢复")
+                            }
+                        } else if !self.isActive {
+                            // 如果画中画已经停止（理论上不应该发生）
+                            print("⚠️ 画中画已停止，尝试快速重启...")
+                            self.attemptQuickRestart()
+                        }
                     }
+                } else {
+                    print("💡 音频会话未被我们暂停，无需恢复")
                 }
 
             @unknown default:
@@ -572,7 +595,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         do {
             let audioSession = AVAudioSession.sharedInstance()
             // 使用 playback 类别以支持画中画，同时设置多个选项：
-            // - mixWithOthers: 允许与其他音频同时播放（关键：防止被相机等强制中断）
+            // - mixWithOthers: 允许与其他音频同时播放（关键：与相机等应用和平共处）
             // - duckOthers: 降低其他音频的音量，而不是停止它们
             // - allowBluetooth: 允许蓝牙音频输出
             // - allowBluetoothA2DP: 允许蓝牙A2DP音频输出（提高兼容性）
@@ -581,10 +604,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 mode: .default,
                 options: [.mixWithOthers, .duckOthers, .allowBluetooth, .allowBluetoothA2DP]
             )
-            // 设置音频会话为活跃状态，并且不要通知其他应用
-            // 这样即使被中断也能更容易恢复
-            try audioSession.setActive(true, options: [])
-            print("✅ 音频会话配置成功：playback + mixWithOthers + duckOthers + 蓝牙支持，最大化兼容性，防止相机中断")
+            // 使用 notifyOthersOnDeactivation 选项，这样当我们主动停用时，其他应用可以获得控制权
+            // 这对于与相机等应用的兼容性至关重要
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ 音频会话配置成功：playback + mixWithOthers + duckOthers + 蓝牙支持 + 主动通知，兼容相机等应用")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
@@ -891,6 +914,15 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         print("🛑 PiP did stop")
+
+        // 检查是否是因为音频中断（相机等）导致的停止
+        if audioSessionWasPausedForInterruption {
+            print("💡 画中画因音频中断而停止，这是预期行为，将在中断结束后恢复")
+            // 不设置 isActive = false，因为我们希望保持"激活"状态
+            // 这样当音频中断结束时，我们知道要恢复画中画
+            return
+        }
+
         DispatchQueue.main.async {
             self.isActive = false
 
