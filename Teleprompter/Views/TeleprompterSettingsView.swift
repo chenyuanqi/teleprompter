@@ -373,14 +373,19 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var videoRenderer: TeleprompterVideoRenderer?
     private var sceneObserver: NSObjectProtocol?
     private var audioInterruptionObserver: NSObjectProtocol?
+    private var appBecomeActiveObserver: NSObjectProtocol?
+    private var appResignActiveObserver: NSObjectProtocol?
     private var countdownTimer: Timer?
     private var countdownValue: Int = 3
+    private var autoRestartRetryCount = 0  // 自动重启重试计数器
+    private let maxAutoRestartRetries = 3  // 最多重试3次
 
     override init() {
         super.init()
         setupAudioSession()
         setupSceneObserver()
         setupAudioInterruptionObserver()
+        setupAppLifecycleObservers()
     }
 
     private func setupSceneObserver() {
@@ -408,7 +413,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     private func setupAudioInterruptionObserver() {
-        // 监听音频会话中断（比如系统录屏启动）
+        // 监听音频会话中断（包括相机、录屏等）
         audioInterruptionObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
@@ -423,26 +428,49 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
             switch type {
             case .began:
-                // 音频会话被中断（录屏开始）
-                print("🎙️ 音频会话被中断（可能是录屏开始）")
-                // 不需要做任何事，让画中画继续
+                // 音频会话被中断（可能是相机、录屏等）
+                print("🎙️ 音频会话被中断（可能是相机、录屏等应用启动）")
+
+                // 获取中断原因
+                if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
+                   let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue) {
+                    let reasonDesc = reason == .default ? "默认中断" :
+                                    reason == .appWasSuspended ? "应用被挂起" :
+                                    reason == .builtInMicMuted ? "内置麦克风静音" :
+                                    "其他原因(\(reason.rawValue))"
+                    print("🎙️ 中断原因: \(reasonDesc)")
+                }
+
+                // 保持画中画运行，不做任何主动停止操作
+                print("💡 保持画中画运行，等待中断结束...")
 
             case .ended:
-                // 音频会话中断结束（录屏停止）
-                print("🎙️ 音频会话中断结束（可能是录屏停止）")
+                // 音频会话中断结束（相机关闭、录屏停止等）
+                print("🎙️ 音频会话中断结束")
 
                 // 检查是否应该恢复播放
+                var shouldResume = false
                 if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                     let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                    if options.contains(.shouldResume) {
-                        print("🎙️ 应该恢复播放")
-                        // 重新激活音频会话
-                        self.reactivateAudioSession()
-                        // 如果画中画还在运行且播放器已暂停，恢复播放
-                        if self.isActive, let player = self.player, player.rate == 0 {
-                            print("▶️ 恢复播放")
-                            player.play()
-                        }
+                    shouldResume = options.contains(.shouldResume)
+                    print("🎙️ 系统建议\(shouldResume ? "恢复" : "不恢复")播放")
+                }
+
+                // 立即重新激活音频会话（关键！）
+                print("🔄 立即重新激活音频会话...")
+                self.reactivateAudioSession()
+
+                // 如果画中画还在运行且播放器已暂停，恢复播放
+                if self.isActive, let player = self.player {
+                    if player.rate == 0 {
+                        print("▶️ 恢复播放")
+                        player.play()
+                    }
+                } else if !self.isActive {
+                    // 如果画中画已经停止，尝试快速重启
+                    print("🔄 画中画已停止，尝试快速重启...")
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                        self?.attemptQuickRestart()
                     }
                 }
 
@@ -462,20 +490,101 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         }
     }
 
+    private func setupAppLifecycleObservers() {
+        // 监听应用回到前台（相机关闭后返回应用时触发）
+        appBecomeActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("📱 应用回到前台 (didBecomeActive)")
+
+            // 如果画中画之前是激活的但现在不活跃了，可能是被相机中断了
+            // 尝试快速重新启动
+            if !self.isActive, let pipController = self.pipController, let player = self.player {
+                print("🔄 检测到画中画可能被中断，准备尝试恢复...")
+
+                // 重新激活音频会话
+                self.reactivateAudioSession()
+
+                // 短暂延迟后尝试重启（给系统时间释放资源）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    self?.attemptQuickRestart()
+                }
+            }
+        }
+
+        // 监听应用即将失去焦点（切换到相机等其他应用时触发）
+        appResignActiveObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.willResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            print("📱 应用即将失去焦点 (willResignActive)")
+
+            // 保存当前画中画状态，用于恢复判断
+            if self.isActive {
+                print("💾 画中画当前处于激活状态，记录以便后续恢复")
+            }
+        }
+    }
+
+    private func attemptQuickRestart() {
+        guard let pipController = self.pipController,
+              let player = self.player,
+              !self.isActive else {
+            print("⚠️ 快速重启条件不满足")
+            return
+        }
+
+        // 检查播放器状态
+        guard player.currentItem?.status == .readyToPlay else {
+            print("⚠️ 播放器未准备好，无法快速重启")
+            return
+        }
+
+        // 检查是否可以启动画中画
+        if pipController.isPictureInPicturePossible {
+            print("✅ 执行快速重启画中画")
+            self.errorMessage = nil
+            self.autoRestartRetryCount = 0  // 重置重试计数
+            pipController.startPictureInPicture()
+        } else {
+            print("⚠️ 画中画当前不可用，等待条件满足...")
+            // 如果还没达到最大重试次数，继续重试
+            if self.autoRestartRetryCount < self.maxAutoRestartRetries {
+                self.autoRestartRetryCount += 1
+                let delay = Double(self.autoRestartRetryCount) * 0.5  // 指数退避：0.5s, 1.0s, 1.5s
+                print("🔄 将在 \(delay) 秒后进行第 \(self.autoRestartRetryCount) 次重试...")
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.attemptQuickRestart()
+                }
+            } else {
+                print("❌ 已达到最大重试次数 (\(self.maxAutoRestartRetries))，放弃自动重启")
+                self.errorMessage = "画中画已停止\n可能原因：相机或其他应用占用\n请手动重新启动"
+            }
+        }
+    }
+
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
             // 使用 playback 类别以支持画中画，同时设置多个选项：
-            // - mixWithOthers: 允许与其他音频同时播放
+            // - mixWithOthers: 允许与其他音频同时播放（关键：防止被相机等强制中断）
             // - duckOthers: 降低其他音频的音量，而不是停止它们
-            // - allowAirPlay: 允许 AirPlay（虽然我们用不到，但保持兼容性）
+            // - allowBluetooth: 允许蓝牙音频输出
+            // - allowBluetoothA2DP: 允许蓝牙A2DP音频输出（提高兼容性）
             try audioSession.setCategory(
                 .playback,
                 mode: .default,
-                options: [.mixWithOthers, .duckOthers]
+                options: [.mixWithOthers, .duckOthers, .allowBluetooth, .allowBluetoothA2DP]
             )
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            print("✅ 音频会话配置成功：playback + mixWithOthers + duckOthers，最大化兼容性")
+            // 设置音频会话为活跃状态，并且不要通知其他应用
+            // 这样即使被中断也能更容易恢复
+            try audioSession.setActive(true, options: [])
+            print("✅ 音频会话配置成功：playback + mixWithOthers + duckOthers + 蓝牙支持，最大化兼容性，防止相机中断")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
@@ -726,6 +835,12 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         if let observer = audioInterruptionObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        if let observer = appBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = appResignActiveObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         stopPiP()
     }
 }
@@ -785,11 +900,12 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     }
 
     private func checkAndAutoRestart() {
-        // 重置自动重启标记
+        // 重置自动重启标记和重试计数
         autoRestartAttempted = false
+        autoRestartRetryCount = 0
 
-        // 等待一小段时间，看场景是否会重新激活
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        // 缩短等待时间到0.5秒（从1.5秒优化），更快响应
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self = self else { return }
 
             // 如果已经重新激活了，不需要自动重启
@@ -823,15 +939,16 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
 
                 // 先确保播放器准备好
                 if player.currentItem?.status == .readyToPlay {
-                    // 等待一小段时间确保场景完全稳定
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    // 缩短等待时间到0.3秒（从0.5秒优化）
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         if pipController.isPictureInPicturePossible {
                             print("✅ 自动重启画中画")
                             self.errorMessage = nil  // 清除错误信息
                             pipController.startPictureInPicture()
                         } else {
-                            print("⚠️ 画中画暂时不可用，无法自动重启")
-                            self.errorMessage = "画中画已停止\n可能原因：相机或其他应用占用\n请手动重新启动"
+                            print("⚠️ 画中画暂时不可用，启动重试机制...")
+                            // 调用带重试的快速重启方法
+                            self.attemptQuickRestart()
                         }
                     }
                 } else {
