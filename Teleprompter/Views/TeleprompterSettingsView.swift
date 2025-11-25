@@ -370,12 +370,12 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
+    private var audioInterruptionObserver: NSObjectProtocol?
 
     override init() {
         super.init()
         setupAudioSession()
-        // 不需要监听场景、音频中断、应用生命周期
-        // 让系统自然管理 PiP，我们不主动干预
+        setupAudioInterruptionObserver()
     }
 
     private func setupAudioSession() {
@@ -393,6 +393,57 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             print("✅ 音频会话配置成功：playback + moviePlayback 模式")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
+        }
+    }
+
+    private func setupAudioInterruptionObserver() {
+        // 只监听音频中断，用于在相机关闭后恢复播放
+        audioInterruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(),
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+                return
+            }
+
+            switch type {
+            case .began:
+                // 音频会话被中断（相机启动）
+                print("🎙️ 音频中断开始（相机等应用启动）")
+                // 不做任何操作，让系统处理
+
+            case .ended:
+                // 音频会话中断结束（相机关闭）
+                print("🎙️ 音频中断结束（相机等应用关闭）")
+
+                // 检查是否应该恢复播放
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if options.contains(.shouldResume) {
+                        print("🎙️ 系统建议恢复播放")
+                    }
+                }
+
+                // 关键：立即恢复播放
+                // 无论画中画是否还在运行，都尝试恢复播放器
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self = self, let player = self.player else { return }
+
+                    if player.rate == 0 {
+                        print("▶️ 恢复播放（相机关闭后）")
+                        player.play()
+                    } else {
+                        print("✅ 播放器已在播放")
+                    }
+                }
+
+            @unknown default:
+                break
+            }
         }
     }
 
@@ -627,6 +678,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     deinit {
+        // 清理观察者
+        if let observer = audioInterruptionObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         // 清理资源
         stopPiP()
     }
