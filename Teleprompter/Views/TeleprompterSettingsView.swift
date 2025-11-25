@@ -429,9 +429,8 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
             switch type {
             case .began:
-                // 使用 ambient 音频类别后，理论上不应该被中断
-                // 但如果还是被中断了，记录日志观察
-                print("🎙️ 音频会话被中断（ambient类别不应该被中断，这很罕见）")
+                // 音频会话被中断（相机等应用启动）
+                print("🎙️ 音频会话被中断（相机等应用启动）")
 
                 // 获取中断原因
                 if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
@@ -443,14 +442,15 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                     print("🎙️ 中断原因: \(reasonDesc)")
                 }
 
-                // 使用 ambient 类别，我们不需要主动停用音频会话
-                // 让系统自然处理，ambient 会自动让位
-                print("💡 保持音频会话激活（ambient会自动与其他应用共存）")
+                // 关键策略：什么都不做！
+                // 不停用音频会话，不停止画中画，让iOS系统自己处理
+                // 播放器是静音的，实际不会干扰相机录音
+                print("💡 不做任何操作，让画中画和相机自然共存（播放器已静音）")
                 self.audioSessionWasPausedForInterruption = true
 
             case .ended:
                 // 音频会话中断结束
-                print("🎙️ 音频会话中断结束")
+                print("🎙️ 音频会话中断结束（相机等应用已关闭）")
 
                 // 检查是否应该恢复播放
                 if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
@@ -459,22 +459,23 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                     print("🎙️ 系统建议\(shouldResume ? "恢复" : "不恢复")播放")
                 }
 
-                // 如果画中画还在运行，确保播放器继续播放
+                // 检查画中画状态
                 if self.audioSessionWasPausedForInterruption {
                     self.audioSessionWasPausedForInterruption = false
 
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                         guard let self = self else { return }
 
                         if self.isActive, let player = self.player {
+                            // 画中画仍在运行
                             if player.rate == 0 {
-                                print("▶️ 恢复播放")
+                                print("▶️ 画中画仍在运行，恢复播放")
                                 player.play()
                             } else {
-                                print("✅ 画中画正在播放，无需恢复")
+                                print("✅ 画中画正常播放中")
                             }
                         } else if !self.isActive {
-                            // 如果画中画意外停止，尝试重启
+                            // 画中画被停止了，尝试重启
                             print("⚠️ 画中画已停止，尝试快速重启...")
                             self.attemptQuickRestart()
                         }
@@ -578,19 +579,19 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 关键策略：使用 ambient 类别而非 playback
-            // ambient 是最低优先级的音频类别，完全不会干扰相机等应用
-            // 但仍然可以支持画中画（因为播放器是静音的）
-            // 选项说明：
-            // - mixWithOthers: 允许与任何其他音频混合（包括相机录音）
+            // 画中画要求使用 .playback 类别（.ambient 不支持画中画）
+            // 但我们可以通过配置选项来最小化与相机的冲突：
+            // - mixWithOthers: 允许与其他音频混合
+            // - duckOthers: 降低其他音频音量而非停止（但相机会忽略这个）
+            // 关键：播放器已经是静音的(isMuted=true)，实际不会产生声音
             try audioSession.setCategory(
-                .ambient,  // 使用 ambient 而不是 playback，这是关键！
+                .playback,
                 mode: .default,
-                options: [.mixWithOthers]
+                options: [.mixWithOthers, .duckOthers]
             )
-            // 激活音频会话，使用最低优先级
+            // 激活音频会话
             try audioSession.setActive(true, options: [])
-            print("✅ 音频会话配置成功：ambient + mixWithOthers，完全不干扰相机等应用")
+            print("✅ 音频会话配置成功：playback(画中画要求) + mixWithOthers")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
