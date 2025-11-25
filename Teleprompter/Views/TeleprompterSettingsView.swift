@@ -370,8 +370,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
-    private var countdownTimer: Timer?
-    private var countdownValue: Int = 3
 
     override init() {
         super.init()
@@ -481,18 +479,15 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 // 先设置 playerLayer，触发视图更新
                 self.playerLayer = layer
 
-                // 先播放一小段确保视频准备好
+                // 关键：立即开始播放！
+                // PiP 要求播放器处于播放状态
+                // 播放器是静音的，所以不会有声音
                 player.play()
+                print("▶️ 播放器开始播放（静音）")
 
-                // 等待视图更新和视频加载
+                // 等待 playerLayer 完全准备好
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    // 暂停播放
-                    player.pause()
-
-                    // 再等待 playerLayer 完全准备好
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        self.setupPiPController(with: layer, player: player)
-                    }
+                    self.setupPiPController(with: layer, player: player)
                 }
             }
         }
@@ -603,10 +598,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func cleanupResources() {
         print("清理资源...")
 
-        // 停止倒计时定时器
-        countdownTimer?.invalidate()
-        countdownTimer = nil
-
         // 停止播放器
         player?.pause()
 
@@ -651,37 +642,8 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
         print("PiP did start")
         DispatchQueue.main.async {
             self.isActive = true
-
-            // 启动倒计时
-            self.startCountdown()
-        }
-    }
-
-    private func startCountdown() {
-        countdownValue = 3
-        videoRenderer?.showCountdown(countdownValue)
-
-        // 创建定时器每秒更新倒计时
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] timer in
-            guard let self = self else {
-                timer.invalidate()
-                return
-            }
-
-            self.countdownValue -= 1
-
-            if self.countdownValue > 0 {
-                // 更新倒计时显示
-                self.videoRenderer?.showCountdown(self.countdownValue)
-            } else {
-                // 倒计时结束
-                timer.invalidate()
-                self.countdownTimer = nil
-                self.videoRenderer?.hideCountdown()
-
-                print("▶️ 开始播放")
-                self.player?.play()
-            }
+            // 播放器已经在播放了，不需要倒计时延迟
+            print("✅ 画中画已启动，提词器正在滚动")
         }
     }
 
