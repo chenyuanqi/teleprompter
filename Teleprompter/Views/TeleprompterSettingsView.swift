@@ -370,15 +370,15 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
-    private var audioInterruptionObserver: NSObjectProtocol?
+    private var sceneActivationObserver: NSObjectProtocol?
 
     override init() {
         super.init()
         print("🔧 PiPTeleprompterController 初始化")
-        // 即使使用 .mixWithOthers，相机仍会发送音频中断通知
-        // 需要监听并在中断结束时恢复播放
-        setupAudioInterruptionObserver()
-        print("✅ 音频中断监听器已设置")
+        // 使用 .mixWithOthers 后，音频中断通知不会被触发
+        // 改为监听应用场景激活状态，在应用回到前台时恢复播放
+        setupSceneActivationObserver()
+        print("✅ 场景激活监听器已设置")
     }
 
     // 启动 PiP 前使用 .playback + .mixWithOthers
@@ -401,101 +401,73 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         }
     }
 
-    // 监听音频中断，在相机关闭后自动恢复播放
-    private func setupAudioInterruptionObserver() {
-        print("📡 开始设置音频中断监听器...")
+    // 监听应用场景激活状态，在回到前台时检查并恢复播放
+    private func setupSceneActivationObserver() {
+        print("📡 开始设置场景激活监听器...")
 
-        audioInterruptionObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(),
+        // 监听场景进入前台激活状态
+        sceneActivationObserver = NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification,
+            object: nil,
             queue: .main
         ) { [weak self] notification in
-            print("📨 收到音频中断通知！")
-            print("📋 通知内容: \(notification)")
+            print("📨 收到场景激活通知（应用回到前台）")
 
             guard let self = self else {
                 print("❌ self 已释放")
                 return
             }
 
-            guard let userInfo = notification.userInfo else {
-                print("❌ 没有 userInfo")
+            // 只在画中画激活时才处理
+            guard self.isActive else {
+                print("ℹ️ 画中画未激活，无需处理")
                 return
             }
 
-            print("📋 userInfo: \(userInfo)")
-
-            guard let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt else {
-                print("❌ 无法获取中断类型")
+            guard let player = self.player else {
+                print("❌ 播放器不存在")
                 return
             }
 
-            guard let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-                print("❌ 无法解析中断类型: \(typeValue)")
-                return
-            }
+            print("📊 当前播放器状态: rate=\(player.rate)")
 
-            switch type {
-            case .began:
-                print("🎙️ 音频中断开始（相机等应用启动） - 播放将暂停")
-                print("   当前播放器状态: rate=\(self.player?.rate ?? -1)")
-                // 不做任何操作，让系统暂停播放
+            // 如果播放器被暂停了，恢复播放
+            if player.rate == 0 {
+                print("🔄 检测到播放器已暂停，准备恢复...")
 
-            case .ended:
-                print("🎙️ 音频中断结束（相机等应用关闭） - 准备恢复播放")
-                print("   当前播放器状态: rate=\(self.player?.rate ?? -1)")
-
-                // 恢复播放
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                    guard let self = self else {
-                        print("❌ 延迟执行时 self 已释放")
-                        return
-                    }
-
-                    guard let player = self.player else {
-                        print("❌ 播放器不存在")
-                        return
-                    }
-
-                    print("🔄 开始恢复流程...")
+                // 稍微延迟一下，确保场景完全激活
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, let player = self.player else { return }
 
                     // 重新激活音频会话
                     do {
                         try AVAudioSession.sharedInstance().setActive(true)
-                        print("✅ 音频会话重新激活成功")
+                        print("✅ 音频会话重新激活")
                     } catch {
-                        print("❌ 重新激活音频会话失败: \(error)")
+                        print("❌ 音频会话激活失败: \(error)")
                     }
 
                     // 恢复播放
-                    print("   播放器当前速率: \(player.rate)")
-                    if player.rate == 0 {
-                        print("▶️ 调用 player.play()...")
-                        player.play()
+                    player.play()
+                    print("▶️ 已调用 player.play()")
 
-                        // 验证是否成功
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            if let rate = self.player?.rate {
-                                print("   恢复后播放速率: \(rate)")
-                                if rate > 0 {
-                                    print("✅ 播放恢复成功！")
-                                } else {
-                                    print("⚠️ 播放恢复失败，速率仍为 0")
-                                }
+                    // 验证
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if let rate = self.player?.rate {
+                            if rate > 0 {
+                                print("✅ 播放已自动恢复！播放速率: \(rate)")
+                            } else {
+                                print("⚠️ 播放恢复失败，速率仍为 0")
                             }
                         }
-                    } else {
-                        print("ℹ️ 播放器已在播放，无需恢复")
                     }
                 }
-
-            @unknown default:
-                print("⚠️ 未知的中断类型: \(typeValue)")
-                break
+            } else {
+                print("✅ 播放器正在播放，无需恢复")
             }
         }
 
-        print("📡 音频中断监听器设置完成")
+        print("📡 场景激活监听器设置完成")
     }
 
 
@@ -734,7 +706,7 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
     deinit {
         // 清理观察者
-        if let observer = audioInterruptionObserver {
+        if let observer = sceneActivationObserver {
             NotificationCenter.default.removeObserver(observer)
         }
         // 清理资源
