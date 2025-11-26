@@ -371,13 +371,10 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
     private var sceneActivationObserver: NSObjectProtocol?
-    private var playbackMonitorTimer: Timer?
 
     override init() {
         super.init()
-        print("🔧 PiPTeleprompterController 初始化")
         setupSceneActivationObserver()
-        print("✅ 场景激活监听器已设置")
     }
 
     // 音频会话配置：使用 .playback + .mixWithOthers
@@ -399,96 +396,28 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         }
     }
 
-    // 监听场景激活，当用户从相机等其他应用返回时自动恢复播放
+    // 监听场景激活，当用户点击画中画窗口时自动恢复播放
     private func setupSceneActivationObserver() {
-        print("📡 开始设置场景激活监听器...")
-
         sceneActivationObserver = NotificationCenter.default.addObserver(
             forName: UIScene.didActivateNotification,
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self = self else { return }
-
-            // 只在画中画激活且播放器存在时处理
-            guard self.isActive, let player = self.player else {
+            guard let self = self,
+                  self.isActive,
+                  let player = self.player,
+                  player.rate == 0 else {
                 return
             }
 
-            print("📨 场景激活通知（应用回到前台）")
-            self.attemptResumePlayback()
-        }
-
-        print("✅ 场景激活监听器设置完成")
-    }
-
-    // 启动定时监控，定期尝试恢复播放
-    private func startPlaybackMonitor() {
-        // 停止之前的定时器
-        stopPlaybackMonitor()
-
-        print("⏰ 启动播放监控定时器（每 2.5 秒尝试恢复一次）")
-
-        playbackMonitorTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-
-            // 只在画中画激活时监控
-            guard self.isActive, let player = self.player else {
-                return
-            }
-
-            // 检查播放器状态
-            if player.rate == 0 {
-                print("⏰ [定时检查] 播放器已暂停，尝试恢复...")
-                self.attemptResumePlayback()
-            }
-        }
-    }
-
-    // 停止定时监控
-    private func stopPlaybackMonitor() {
-        if let timer = playbackMonitorTimer {
-            timer.invalidate()
-            playbackMonitorTimer = nil
-            print("⏰ 停止播放监控定时器")
-        }
-    }
-
-    // 尝试恢复播放
-    private func attemptResumePlayback() {
-        guard let player = self.player else {
-            print("❌ 播放器不存在")
-            return
-        }
-
-        print("📊 当前播放器状态: rate=\(player.rate)")
-
-        // 如果播放器被暂停了，尝试恢复
-        if player.rate == 0 {
-            print("🔄 检测到播放器已暂停，准备恢复...")
-
-            // 重新激活音频会话
+            // 重新激活音频会话并恢复播放
             do {
                 try AVAudioSession.sharedInstance().setActive(true, options: [])
-                print("✅ 音频会话重新激活")
+                player.play()
+                print("▶️ 场景激活，已自动恢复播放")
             } catch {
-                print("⚠️ 音频会话激活失败: \(error)")
+                print("⚠️ 恢复播放失败: \(error)")
             }
-
-            // 恢复播放
-            player.play()
-            print("▶️ 已调用 player.play()")
-
-            // 验证恢复结果
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                if let rate = self?.player?.rate, rate > 0 {
-                    print("✅ 播放已成功恢复，速率: \(rate)")
-                } else {
-                    print("⚠️ 播放恢复失败，系统可能仍在强制暂停")
-                }
-            }
-        } else {
-            print("✅ 播放器正在播放，速率: \(player.rate)")
         }
     }
 
@@ -696,11 +625,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     private func cleanupResources() {
-        print("清理资源...")
-
-        // 停止定时监控
-        stopPlaybackMonitor()
-
         // 停止播放器
         player?.pause()
 
@@ -716,17 +640,12 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         player = nil
         playerLayer = nil
         videoRenderer = nil
-
-        print("资源清理完成")
     }
 
     func stopPiP() {
-        print("停止画中画...")
         cleanupResources()
-
         isActive = false
         errorMessage = nil
-        print("画中画已停止")
     }
 
     deinit {
@@ -746,17 +665,10 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        print("PiP did start")
         DispatchQueue.main.async {
             self.isActive = true
-            print("✅ 画中画已启动，提词器正在滚动")
-            print("ℹ️ 使用说明：")
-            print("   - 画中画窗口与相机等应用共存")
-            print("   - 系统会每 2.5 秒自动尝试恢复播放")
-            print("   - 如果相机在运行，可能需要多次尝试")
-
-            // 启动定时监控，定期尝试恢复播放
-            self.startPlaybackMonitor()
+            print("✅ 画中画已启动")
+            print("ℹ️ 提示：打开相机时播放会暂停，关闭相机或点击画中画窗口即可恢复")
         }
     }
 
