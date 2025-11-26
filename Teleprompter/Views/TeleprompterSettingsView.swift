@@ -368,13 +368,17 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     @Published var playerLayer: AVPlayerLayer?
 
     private var pipController: AVPictureInPictureController?
+    private var sampleBufferDisplayLayer: AVSampleBufferDisplayLayer?
+    private var frameRenderer: LiveTeleprompterRenderer?
+    private var sceneActivationObserver: NSObjectProtocol?
+
+    // 旧的 AVPlayer 方式的属性（用于向后兼容）
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
-    private var sceneActivationObserver: NSObjectProtocol?
 
     override init() {
         super.init()
-        setupSceneActivationObserver()
+        print("🔧 PiPTeleprompterController 初始化 (SampleBuffer模式)")
     }
 
     // 音频会话配置：使用 .playback + .mixWithOthers
@@ -432,22 +436,69 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         // 清除错误信息
         errorMessage = nil
 
-        // 🔑 关键：启动 PiP 前必须先配置 .playback 音频会话
+        // 配置音频会话
         setupAudioSessionForPiP()
 
-        // 先清理之前的资源（如果有的话）
-        if pipController != nil || player != nil {
+        // 先清理之前的资源
+        if pipController != nil || sampleBufferDisplayLayer != nil {
             print("检测到现有资源，先清理...")
             cleanupResources()
 
-            // 等待一小段时间确保资源完全释放
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                self?.actuallyStartPiP(script: script, settings: settings)
+                self?.actuallyStartPiPWithSampleBuffer(script: script, settings: settings)
             }
             return
         }
 
-        actuallyStartPiP(script: script, settings: settings)
+        actuallyStartPiPWithSampleBuffer(script: script, settings: settings)
+    }
+
+    // AVSampleBufferDisplayLayer 方式启动画中画
+    private func actuallyStartPiPWithSampleBuffer(script: Script, settings: TeleprompterSettings) {
+        print("🚀 使用 SampleBuffer 方式启动画中画")
+
+        // 创建 AVSampleBufferDisplayLayer
+        let displayLayer = AVSampleBufferDisplayLayer()
+        displayLayer.videoGravity = .resizeAspect
+        displayLayer.frame = CGRect(x: 0, y: 0, width: 1920, height: 960)
+        self.sampleBufferDisplayLayer = displayLayer
+
+        // 创建实时渲染器
+        let renderer = LiveTeleprompterRenderer(script: script, settings: settings)
+        self.frameRenderer = renderer
+
+        // 设置帧回调
+        renderer.onFrameGenerated = { [weak self, weak displayLayer] sampleBuffer in
+            guard let displayLayer = displayLayer else { return }
+
+            // 将帧送入 displayLayer
+            if displayLayer.isReadyForMoreMediaData {
+                displayLayer.enqueue(sampleBuffer)
+            } else {
+                // 如果 layer 还没准备好，丢弃这一帧
+                displayLayer.flush()
+                if displayLayer.isReadyForMoreMediaData {
+                    displayLayer.enqueue(sampleBuffer)
+                }
+            }
+        }
+
+        // 先设置 playerLayer 用于界面显示（使用特殊的包装视图）
+        // 注意：这里我们需要创建一个假的 playerLayer 用于触发 SwiftUI 更新
+        // 实际渲染使用 sampleBufferDisplayLayer
+        let dummyPlayer = AVPlayer()
+        let dummyLayer = AVPlayerLayer(player: dummyPlayer)
+        dummyLayer.frame = CGRect(x: 0, y: 0, width: 1920, height: 960)
+
+        // 将 sampleBufferDisplayLayer 作为子层添加到 dummyLayer
+        dummyLayer.addSublayer(displayLayer)
+
+        self.playerLayer = dummyLayer
+
+        // 等待 layer 被添加到视图层级
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.setupPiPControllerWithSampleBuffer()
+        }
     }
 
     private func actuallyStartPiP(script: Script, settings: TeleprompterSettings) {
@@ -624,7 +675,96 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         print("✅ 已调用 startPictureInPicture()")
     }
 
+    // 使用 SampleBuffer 方式创建 PiP 控制器
+    private func setupPiPControllerWithSampleBuffer() {
+        guard let sampleBufferLayer = sampleBufferDisplayLayer else {
+            print("❌ sampleBufferDisplayLayer 未初始化")
+            errorMessage = "渲染层未初始化"
+            return
+        }
+
+        print("✅ 创建 PiP 控制器（SampleBuffer 模式）")
+
+        // 创建 ContentSource
+        let contentSource = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: sampleBufferLayer,
+            playbackDelegate: self
+        )
+
+        // 创建 PiP 控制器
+        let pipController = AVPictureInPictureController(contentSource: contentSource)
+
+        print("✅ SampleBuffer PiP 控制器创建成功")
+        pipController.delegate = self
+        pipController.canStartPictureInPictureAutomaticallyFromInline = true
+        self.pipController = pipController
+
+        // 开始渲染
+        frameRenderer?.start()
+
+        // 尝试启动 PiP
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.attemptStartPiPWithSampleBuffer()
+        }
+    }
+
+    private func attemptStartPiPWithSampleBuffer(retryCount: Int = 0) {
+        guard let pipController = pipController else {
+            print("❌ PiP 控制器未初始化")
+            errorMessage = "PiP 控制器未初始化"
+            return
+        }
+
+        print("\n=== 尝试启动 SampleBuffer PiP (第 \(retryCount + 1) 次) ===")
+        print("📊 画中画是否可用: \(pipController.isPictureInPicturePossible)")
+
+        // 检查场景状态
+        let scenes = UIApplication.shared.connectedScenes
+        guard let windowScene = scenes.first as? UIWindowScene else {
+            print("❌ 未找到 WindowScene")
+            errorMessage = "应用窗口未就绪"
+            return
+        }
+
+        let state = windowScene.activationState
+        print("📊 场景状态: \(state == .foregroundActive ? "✅ foregroundActive" : "❌ \(state.rawValue)")")
+
+        if state != .foregroundActive {
+            if retryCount < 5 {
+                print("⏳ 场景未激活，将在 0.5 秒后重试")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.attemptStartPiPWithSampleBuffer(retryCount: retryCount + 1)
+                }
+            } else {
+                print("❌ 场景始终未激活")
+                errorMessage = "应用未在前台活跃状态"
+            }
+            return
+        }
+
+        if !pipController.isPictureInPicturePossible {
+            if retryCount < 5 {
+                print("⏳ PiP 还不可用，将在 0.5 秒后重试")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                    self?.attemptStartPiPWithSampleBuffer(retryCount: retryCount + 1)
+                }
+            } else {
+                print("❌ PiP 始终不可用")
+                errorMessage = "画中画启动失败，请重新尝试"
+            }
+            return
+        }
+
+        // 启动 PiP
+        print("✅ 所有条件满足，启动 SampleBuffer PiP！")
+        pipController.startPictureInPicture()
+        print("✅ 已调用 startPictureInPicture()")
+    }
+
     private func cleanupResources() {
+        // 停止渲染器
+        frameRenderer?.stop()
+
         // 停止播放器
         player?.pause()
 
@@ -640,6 +780,8 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         player = nil
         playerLayer = nil
         videoRenderer = nil
+        sampleBufferDisplayLayer = nil
+        frameRenderer = nil
     }
 
     func stopPiP() {
@@ -698,6 +840,40 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
     func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void) {
         // 用户点击 PiP 窗口时恢复界面
         completionHandler(true)
+    }
+}
+
+// MARK: - AVPictureInPictureSampleBufferPlaybackDelegate
+extension PiPTeleprompterController: AVPictureInPictureSampleBufferPlaybackDelegate {
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, setPlaying playing: Bool) {
+        print("📺 PiP 要求设置播放状态: \(playing ? "播放" : "暂停")")
+
+        if playing {
+            frameRenderer?.start()
+        } else {
+            frameRenderer?.stop()
+        }
+    }
+
+    func pictureInPictureControllerTimeRangeForPlayback(_ pictureInPictureController: AVPictureInPictureController) -> CMTimeRange {
+        // 返回一个很大的时间范围，表示内容可以持续播放
+        return CMTimeRange(start: .zero, duration: CMTime(seconds: 3600, preferredTimescale: 600))
+    }
+
+    func pictureInPictureControllerIsPlaybackPaused(_ pictureInPictureController: AVPictureInPictureController) -> Bool {
+        // 返回当前是否暂停
+        let isPaused = !(frameRenderer?.isScrolling ?? false)
+        print("📺 PiP 查询播放状态: \(isPaused ? "暂停" : "播放")")
+        return isPaused
+    }
+
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, didTransitionToRenderSize newRenderSize: CMVideoDimensions) {
+        print("📺 PiP 渲染尺寸变化: \(newRenderSize.width)x\(newRenderSize.height)")
+    }
+
+    func pictureInPictureController(_ pictureInPictureController: AVPictureInPictureController, skipByInterval skipInterval: CMTime) async {
+        print("📺 PiP 跳转请求: \(skipInterval.seconds) 秒")
+        // 提词器不支持跳转，忽略
     }
 }
 
@@ -1159,6 +1335,283 @@ class TeleprompterVideoRenderer {
 
     deinit {
         // 对象销毁时也清理视频文件
+        stop()
+    }
+}
+
+// MARK: - Live Teleprompter Renderer
+/// 实时渲染提词器帧的渲染器
+/// 使用 Timer 驱动滚动，逐帧生成并输出到 AVSampleBufferDisplayLayer
+class LiveTeleprompterRenderer {
+    private let script: Script
+    private let settings: TeleprompterSettings
+
+    // 渲染尺寸：横屏长条形
+    private let renderSize = CGSize(width: 1920, height: 960)
+    private let fps: Double = 30
+
+    // 滚动状态
+    private var scrollOffset: CGFloat = 0
+    private var timer: Timer?
+    private(set) var isScrolling = false  // 改为 private(set) 以便外部读取
+
+    // 预处理后的行
+    private var wrappedLines: [String] = []
+
+    // 帧生成回调
+    var onFrameGenerated: ((CMSampleBuffer) -> Void)?
+
+    init(script: Script, settings: TeleprompterSettings) {
+        self.script = script
+        self.settings = settings
+
+        // 预先拆分内容
+        self.wrappedLines = self.wrapContentToLines()
+
+        print("📝 LiveTeleprompterRenderer 初始化完成，共 \(wrappedLines.count) 行")
+    }
+
+    // 将脚本内容按字号和宽度拆分成多行
+    private func wrapContentToLines() -> [String] {
+        let fontSize = settings.fontSize * 6.0
+        let padding: CGFloat = 60
+        let maxWidth = renderSize.width - padding * 2
+
+        let font = CTFontCreateWithName("PingFang SC" as CFString, fontSize, nil)
+        let originalLines = script.content.components(separatedBy: .newlines)
+
+        var result: [String] = []
+
+        // 添加前置空行
+        result.append(" ")
+
+        for line in originalLines {
+            guard !line.isEmpty else { continue }
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: UIColor.white.cgColor
+            ]
+
+            let attributedString = NSAttributedString(string: line, attributes: attributes)
+            let framesetter = CTFramesetterCreateWithAttributedString(attributedString)
+
+            let path = CGPath(rect: CGRect(x: 0, y: 0, width: maxWidth, height: 10000), transform: nil)
+            let frame = CTFramesetterCreateFrame(framesetter, CFRange(location: 0, length: attributedString.length), path, nil)
+
+            let lines = CTFrameGetLines(frame) as! [CTLine]
+
+            if lines.isEmpty {
+                result.append(line)
+                continue
+            }
+
+            for ctLine in lines {
+                let lineRange = CTLineGetStringRange(ctLine)
+                let start = String.Index(utf16Offset: lineRange.location, in: line)
+                let end = String.Index(utf16Offset: lineRange.location + lineRange.length, in: line)
+                let substring = String(line[start..<end]).trimmingCharacters(in: .whitespaces)
+
+                if !substring.isEmpty {
+                    result.append(substring)
+                }
+            }
+        }
+
+        // 添加后置空行
+        for _ in 0..<15 {
+            result.append(" ")
+        }
+
+        return result
+    }
+
+    // 开始渲染
+    func start() {
+        guard !isScrolling else { return }
+
+        isScrolling = true
+        scrollOffset = 0
+
+        print("▶️ 开始实时渲染，帧率：\(fps) fps")
+
+        // 使用 Timer 驱动帧生成
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / fps, repeats: true) { [weak self] _ in
+            guard let self = self, self.isScrolling else { return }
+
+            // 生成当前帧
+            if let sampleBuffer = self.generateFrame() {
+                self.onFrameGenerated?(sampleBuffer)
+            }
+
+            // 更新滚动偏移
+            let fontSize = self.settings.fontSize * 6.0
+            let lineSpacing: CGFloat = 40
+            let averageLineHeight = fontSize + lineSpacing
+            let pointsPerSecond = averageLineHeight / CGFloat(self.settings.scrollSpeed)
+            let speed = pointsPerSecond / CGFloat(self.fps)
+
+            self.scrollOffset += speed
+        }
+
+        // 确保 Timer 在主线程运行
+        RunLoop.main.add(timer!, forMode: .common)
+    }
+
+    // 停止渲染
+    func stop() {
+        isScrolling = false
+        timer?.invalidate()
+        timer = nil
+
+        print("⏸️ 停止实时渲染")
+    }
+
+    // 重新开始
+    func restart() {
+        scrollOffset = 0
+        if !isScrolling {
+            start()
+        }
+    }
+
+    // 生成单帧
+    private func generateFrame() -> CMSampleBuffer? {
+        var pixelBuffer: CVPixelBuffer?
+        let options = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true
+        ] as CFDictionary
+
+        let status = CVPixelBufferCreate(
+            kCFAllocatorDefault,
+            Int(renderSize.width),
+            Int(renderSize.height),
+            kCVPixelFormatType_32BGRA,
+            options,
+            &pixelBuffer
+        )
+
+        guard status == kCVReturnSuccess, let buffer = pixelBuffer else {
+            print("❌ 创建 PixelBuffer 失败")
+            return nil
+        }
+
+        CVPixelBufferLockBaseAddress(buffer, [])
+        defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
+
+        guard let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(buffer),
+            width: Int(renderSize.width),
+            height: Int(renderSize.height),
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else {
+            print("❌ 创建 CGContext 失败")
+            return nil
+        }
+
+        // 绘制背景
+        context.setFillColor(UIColor.black.cgColor)
+        context.fill(CGRect(origin: .zero, size: renderSize))
+
+        // 绘制文本
+        drawText(in: context, offset: scrollOffset)
+
+        // 创建 CMSampleBuffer
+        var sampleBuffer: CMSampleBuffer?
+        var timingInfo = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: Int32(fps)),
+            presentationTimeStamp: CMTime(seconds: CACurrentMediaTime(), preferredTimescale: 600),
+            decodeTimeStamp: .invalid
+        )
+
+        var formatDescription: CMFormatDescription?
+        CMVideoFormatDescriptionCreateForImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: buffer,
+            formatDescriptionOut: &formatDescription
+        )
+
+        guard let formatDesc = formatDescription else {
+            print("❌ 创建 FormatDescription 失败")
+            return nil
+        }
+
+        let createStatus = CMSampleBufferCreateReadyWithImageBuffer(
+            allocator: kCFAllocatorDefault,
+            imageBuffer: buffer,
+            formatDescription: formatDesc,
+            sampleTiming: &timingInfo,
+            sampleBufferOut: &sampleBuffer
+        )
+
+        guard createStatus == noErr, let sample = sampleBuffer else {
+            print("❌ 创建 SampleBuffer 失败: \(createStatus)")
+            return nil
+        }
+
+        return sample
+    }
+
+    private func drawText(in context: CGContext, offset: CGFloat) {
+        let lines = wrappedLines
+        let fontSize = settings.fontSize * 6.0
+        let lineSpacing: CGFloat = 60
+        let padding: CGFloat = 60
+
+        context.saveGState()
+
+        let font = CTFontCreateWithName("PingFang SC" as CFString, fontSize, nil)
+
+        // 计算行高
+        let sampleAttributes: [NSAttributedString.Key: Any] = [.font: font]
+        let sampleString = NSAttributedString(string: "测试Ag", attributes: sampleAttributes)
+        let sampleLine = CTLineCreateWithAttributedString(sampleString)
+        let sampleBounds = CTLineGetBoundsWithOptions(sampleLine, .useOpticalBounds)
+        let lineHeight = sampleBounds.height + lineSpacing
+
+        // 高亮区域在 40% 位置
+        let highlightY = renderSize.height * 0.4
+
+        for (index, lineText) in lines.enumerated() {
+            let yPosition = CGFloat(index) * lineHeight
+            let y = highlightY - yPosition + offset
+
+            // 跳过屏幕外的文本
+            guard y > -lineHeight && y < renderSize.height + lineHeight else { continue }
+
+            // 计算是否在高亮区域
+            let distanceFromHighlight = abs(y - highlightY)
+            let isHighlighted = distanceFromHighlight < lineHeight * 0.5
+
+            let color: UIColor
+            if isHighlighted {
+                color = UIColor(settings.textColor)
+            } else {
+                color = UIColor(settings.textColor).withAlphaComponent(0.4)
+            }
+
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color.cgColor
+            ]
+
+            let attributedString = NSAttributedString(string: lineText, attributes: attributes)
+            let line = CTLineCreateWithAttributedString(attributedString)
+
+            let x = padding
+
+            context.textPosition = CGPoint(x: x, y: y)
+            CTLineDraw(line, context)
+        }
+
+        context.restoreGState()
+    }
+
+    deinit {
         stop()
     }
 }
