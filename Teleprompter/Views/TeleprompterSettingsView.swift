@@ -370,12 +370,11 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var pipController: AVPictureInPictureController?
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
-    private var audioInterruptionObserver: NSObjectProtocol?
 
     override init() {
         super.init()
-        // 初始化时先不设置音频会话，等到启动 PiP 时再设置
-        setupAudioInterruptionObserver()
+        // 使用 .mixWithOthers 后不再需要监听音频中断
+        // 相机等应用不会触发中断通知，系统会自动管理播放状态
     }
 
     // 启动 PiP 前使用 .playback + .mixWithOthers
@@ -398,81 +397,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         }
     }
 
-    private func setupAudioInterruptionObserver() {
-        // 只监听音频中断，用于在相机关闭后恢复播放
-        audioInterruptionObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: .main
-        ) { [weak self] notification in
-            guard let self = self,
-                  let userInfo = notification.userInfo,
-                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-                return
-            }
-
-            switch type {
-            case .began:
-                // 音频会话被中断（相机启动）
-                print("🎙️ 音频中断开始（相机等应用启动）")
-                // 不做任何操作，让系统处理
-
-            case .ended:
-                // 音频会话中断结束（相机关闭）
-                print("🎙️ 音频中断结束（相机等应用关闭）")
-
-                // 检查是否应该恢复播放
-                var shouldResume = false
-                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
-                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                    shouldResume = options.contains(.shouldResume)
-                    if shouldResume {
-                        print("🎙️ 系统建议恢复播放")
-                    }
-                }
-
-                // 关键：恢复音频会话和播放
-                // 延迟稍长一点，确保相机完全释放了音频会话
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
-                    guard let self = self, let player = self.player else {
-                        print("❌ 播放器不存在，无法恢复")
-                        return
-                    }
-
-                    // 1. 重新激活音频会话
-                    do {
-                        try AVAudioSession.sharedInstance().setActive(true)
-                        print("✅ 音频会话重新激活")
-                    } catch {
-                        print("❌ 重新激活音频会话失败: \(error)")
-                    }
-
-                    // 2. 恢复播放
-                    if player.rate == 0 {
-                        print("▶️ 恢复播放（相机关闭后），当前时间: \(player.currentTime().seconds)秒")
-                        player.play()
-
-                        // 验证播放是否真的恢复了
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak player] in
-                            if let player = player {
-                                if player.rate > 0 {
-                                    print("✅ 播放已成功恢复，播放速率: \(player.rate)")
-                                } else {
-                                    print("⚠️ 播放恢复失败，播放速率仍为 0")
-                                }
-                            }
-                        }
-                    } else {
-                        print("✅ 播放器已在播放，速率: \(player.rate)")
-                    }
-                }
-
-            @unknown default:
-                break
-            }
-        }
-    }
 
     func startPiP(script: Script, settings: TeleprompterSettings) {
         guard isPiPSupported else {
@@ -708,10 +632,6 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     }
 
     deinit {
-        // 清理观察者
-        if let observer = audioInterruptionObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
         // 清理资源
         stopPiP()
     }
