@@ -374,25 +374,42 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
     override init() {
         super.init()
-        setupAudioSession()
+        // 初始化时先不设置音频会话，等到启动 PiP 时再设置
         setupAudioInterruptionObserver()
     }
 
-    private func setupAudioSession() {
+    // 启动 PiP 前使用 .playback 类别（PiP 必需）
+    private func setupAudioSessionForPiP() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 使用 .ambient 类别，这样不会被相机中断
-            // .ambient 通常不支持 PiP，但我们的视频是静音的，所以可以工作
-            // options: .mixWithOthers 允许与其他应用（包括相机）同时运行
+            // PiP 启动必须使用 .playback 类别
+            try audioSession.setCategory(
+                .playback,
+                mode: .moviePlayback,
+                options: []
+            )
+            try audioSession.setActive(true)
+            print("✅ 音频会话配置为 playback 模式（准备启动 PiP）")
+        } catch {
+            print("❌ 音频会话配置失败: \(error)")
+        }
+    }
+
+    // PiP 启动后切换到 .ambient 类别（避免被相机中断）
+    private func switchToAmbientMode() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            // 切换到 .ambient + .mixWithOthers，这样不会被相机中断
             try audioSession.setCategory(
                 .ambient,
                 mode: .default,
                 options: [.mixWithOthers]
             )
+            // 注意：不要调用 setActive(false)，保持音频会话活跃
             try audioSession.setActive(true)
-            print("✅ 音频会话配置成功：ambient + mixWithOthers 模式（不会被相机中断）")
+            print("✅ 音频会话已切换到 ambient + mixWithOthers 模式（不会被相机中断）")
         } catch {
-            print("❌ 音频会话配置失败: \(error)")
+            print("❌ 切换音频会话失败: \(error)")
         }
     }
 
@@ -456,6 +473,9 @@ class PiPTeleprompterController: NSObject, ObservableObject {
 
         // 清除错误信息
         errorMessage = nil
+
+        // 🔑 关键：启动 PiP 前必须先配置 .playback 音频会话
+        setupAudioSessionForPiP()
 
         // 先清理之前的资源（如果有的话）
         if pipController != nil || player != nil {
@@ -699,6 +719,10 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
             self.isActive = true
             // 播放器已经在播放了，不需要倒计时延迟
             print("✅ 画中画已启动，提词器正在滚动")
+
+            // 🔑 关键：PiP 启动成功后，立即切换到 .ambient 模式
+            // 这样就不会被相机等应用中断了
+            self.switchToAmbientMode()
         }
     }
 
