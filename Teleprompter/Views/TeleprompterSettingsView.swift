@@ -371,34 +371,36 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private var player: AVPlayer?
     private var videoRenderer: TeleprompterVideoRenderer?
     private var playerRateObservation: NSKeyValueObservation?
+    private var lastResumeAttempt: Date?
+    private var resumeAttemptCount: Int = 0
 
     override init() {
         super.init()
         print("🔧 PiPTeleprompterController 初始化")
     }
 
-    // 启动 PiP 前使用 .playback + .mixWithOthers
-    // 这样既支持 PiP，又能与相机等应用共存（画中画窗口不会被关闭）
+    // 启动 PiP 前使用 .playback + .mixWithOthers + .duckOthers
+    // 尝试不同的音频选项组合
     private func setupAudioSessionForPiP() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // 关键配置：
-            // - .playback: PiP 必需
-            // - .mixWithOthers: 画中画窗口不会被相机关闭（但播放仍会被暂停）
+            // 尝试使用 .mixWithOthers + .duckOthers 组合
+            // .mixWithOthers: 与其他应用混音
+            // .duckOthers: 降低其他应用的音量，但不暂停
             try audioSession.setCategory(
                 .playback,
                 mode: .moviePlayback,
-                options: [.mixWithOthers]
+                options: [.mixWithOthers, .duckOthers]
             )
             try audioSession.setActive(true)
-            print("✅ 音频会话配置：playback + mixWithOthers（画中画窗口与相机共存）")
+            print("✅ 音频会话配置：playback + mixWithOthers + duckOthers")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
     }
 
     // 监听播放器的 rate 属性变化，自动恢复播放
-    // 这样即使相机在运行，只要播放器被暂停，就会立即恢复
+    // 但需要限制恢复频率，避免与系统产生无限冲突
     private func setupPlayerRateObserver() {
         guard let player = player else {
             print("❌ 播放器不存在，无法设置监听")
@@ -419,10 +421,29 @@ class PiPTeleprompterController: NSObject, ObservableObject {
             // 检测从播放 → 暂停
             if oldRate > 0 && newRate == 0 {
                 print("⚠️ 检测到播放器被暂停！oldRate=\(oldRate), newRate=\(newRate)")
-                print("🔄 立即恢复播放...")
+
+                // 检查是否在短时间内多次尝试恢复（可能是系统强制暂停）
+                let now = Date()
+                if let lastAttempt = self.lastResumeAttempt,
+                   now.timeIntervalSince(lastAttempt) < 1.0 {
+                    self.resumeAttemptCount += 1
+
+                    if self.resumeAttemptCount > 3 {
+                        print("⚠️ 检测到系统持续强制暂停（可能相机在运行），停止自动恢复尝试")
+                        print("ℹ️ 用户需要关闭相机或点击画中画窗口才能恢复播放")
+                        return
+                    }
+                } else {
+                    // 重置计数器
+                    self.resumeAttemptCount = 1
+                }
+
+                self.lastResumeAttempt = now
+
+                print("🔄 尝试恢复播放（第 \(self.resumeAttemptCount) 次）...")
 
                 // 延迟一点点，避免与系统暂停操作冲突
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
                     guard let self = self, let player = self.player else { return }
 
                     // 重新激活音频会话
@@ -432,14 +453,16 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                         print("⚠️ 音频会话激活失败: \(error)")
                     }
 
-                    // 立即恢复播放
+                    // 尝试恢复播放
                     player.play()
-                    print("▶️ 已自动恢复播放")
+                    print("▶️ 已调用 player.play()")
                 }
             } else if newRate > 0 {
-                // 播放恢复成功
+                // 播放恢复成功，重置计数器
                 if oldRate == 0 {
                     print("✅ 播放已恢复，rate: \(oldRate) → \(newRate)")
+                    self.resumeAttemptCount = 0
+                    self.lastResumeAttempt = nil
                 }
             }
         }
