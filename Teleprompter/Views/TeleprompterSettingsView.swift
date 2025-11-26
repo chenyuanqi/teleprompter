@@ -423,23 +423,48 @@ class PiPTeleprompterController: NSObject, ObservableObject {
                 print("🎙️ 音频中断结束（相机等应用关闭）")
 
                 // 检查是否应该恢复播放
+                var shouldResume = false
                 if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                     let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-                    if options.contains(.shouldResume) {
+                    shouldResume = options.contains(.shouldResume)
+                    if shouldResume {
                         print("🎙️ 系统建议恢复播放")
                     }
                 }
 
-                // 关键：立即恢复播放
-                // 无论画中画是否还在运行，都尝试恢复播放器
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                    guard let self = self, let player = self.player else { return }
+                // 关键：恢复音频会话和播放
+                // 延迟稍长一点，确保相机完全释放了音频会话
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                    guard let self = self, let player = self.player else {
+                        print("❌ 播放器不存在，无法恢复")
+                        return
+                    }
 
+                    // 1. 重新激活音频会话
+                    do {
+                        try AVAudioSession.sharedInstance().setActive(true)
+                        print("✅ 音频会话重新激活")
+                    } catch {
+                        print("❌ 重新激活音频会话失败: \(error)")
+                    }
+
+                    // 2. 恢复播放
                     if player.rate == 0 {
-                        print("▶️ 恢复播放（相机关闭后）")
+                        print("▶️ 恢复播放（相机关闭后），当前时间: \(player.currentTime().seconds)秒")
                         player.play()
+
+                        // 验证播放是否真的恢复了
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak player] in
+                            if let player = player {
+                                if player.rate > 0 {
+                                    print("✅ 播放已成功恢复，播放速率: \(player.rate)")
+                                } else {
+                                    print("⚠️ 播放恢复失败，播放速率仍为 0")
+                                }
+                            }
+                        }
                     } else {
-                        print("✅ 播放器已在播放")
+                        print("✅ 播放器已在播放，速率: \(player.rate)")
                     }
                 }
 
