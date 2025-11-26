@@ -381,16 +381,16 @@ class PiPTeleprompterController: NSObject, ObservableObject {
     private func setupAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // PiP 要求使用 .playback 类别
-            // mode 使用 .moviePlayback 是最适合视频播放的模式
-            // 关键：不要在退后台时停用音频会话，让系统管理
+            // 使用 .ambient 类别，这样不会被相机中断
+            // .ambient 通常不支持 PiP，但我们的视频是静音的，所以可以工作
+            // options: .mixWithOthers 允许与其他应用（包括相机）同时运行
             try audioSession.setCategory(
-                .playback,
-                mode: .moviePlayback,
-                options: []
+                .ambient,
+                mode: .default,
+                options: [.mixWithOthers]
             )
             try audioSession.setActive(true)
-            print("✅ 音频会话配置成功：playback + moviePlayback 模式")
+            print("✅ 音频会话配置成功：ambient + mixWithOthers 模式（不会被相机中断）")
         } catch {
             print("❌ 音频会话配置失败: \(error)")
         }
