@@ -378,38 +378,23 @@ class PiPTeleprompterController: NSObject, ObservableObject {
         setupAudioInterruptionObserver()
     }
 
-    // 启动 PiP 前使用 .playback 类别（PiP 必需）
+    // 启动 PiP 前使用 .playback + .mixWithOthers
+    // 这样既支持 PiP，又能与相机等应用共存
     private func setupAudioSessionForPiP() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            // PiP 启动必须使用 .playback 类别
+            // 关键配置：
+            // - .playback: PiP 必需
+            // - .mixWithOthers: 与其他应用（包括相机）混音，不会被中断
             try audioSession.setCategory(
                 .playback,
                 mode: .moviePlayback,
-                options: []
-            )
-            try audioSession.setActive(true)
-            print("✅ 音频会话配置为 playback 模式（准备启动 PiP）")
-        } catch {
-            print("❌ 音频会话配置失败: \(error)")
-        }
-    }
-
-    // PiP 启动后切换到 .ambient 类别（避免被相机中断）
-    private func switchToAmbientMode() {
-        do {
-            let audioSession = AVAudioSession.sharedInstance()
-            // 切换到 .ambient + .mixWithOthers，这样不会被相机中断
-            try audioSession.setCategory(
-                .ambient,
-                mode: .default,
                 options: [.mixWithOthers]
             )
-            // 注意：不要调用 setActive(false)，保持音频会话活跃
             try audioSession.setActive(true)
-            print("✅ 音频会话已切换到 ambient + mixWithOthers 模式（不会被相机中断）")
+            print("✅ 音频会话配置：playback + mixWithOthers（支持 PiP 且不会被相机中断）")
         } catch {
-            print("❌ 切换音频会话失败: \(error)")
+            print("❌ 音频会话配置失败: \(error)")
         }
     }
 
@@ -719,10 +704,7 @@ extension PiPTeleprompterController: AVPictureInPictureControllerDelegate {
             self.isActive = true
             // 播放器已经在播放了，不需要倒计时延迟
             print("✅ 画中画已启动，提词器正在滚动")
-
-            // 🔑 关键：PiP 启动成功后，立即切换到 .ambient 模式
-            // 这样就不会被相机等应用中断了
-            self.switchToAmbientMode()
+            print("✅ 使用 .playback + .mixWithOthers，可与相机等应用共存")
         }
     }
 
